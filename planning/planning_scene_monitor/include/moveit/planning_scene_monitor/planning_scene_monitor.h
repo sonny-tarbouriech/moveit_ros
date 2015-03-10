@@ -50,6 +50,13 @@
 #include <boost/thread/shared_mutex.hpp>
 #include <boost/thread/recursive_mutex.hpp>
 
+//STa
+#include <moveit/collision_detection_fcl/collision_common.h>
+#include <moveit/collision_detection_fcl/safe_collision_robot_fcl.h>
+#include <moveit/collision_detection_fcl/safe_collision_world_fcl.h>
+#include <geometric_shapes/shape_operations.h>
+#include <fstream>
+
 namespace planning_scene_monitor
 {
 
@@ -98,6 +105,10 @@ public:
   
   /// The name of the topic used by default for publishing the monitored planning scene (this is without "/" in the name, so the topic is prefixed by the node name)
   static const std::string MONITORED_PLANNING_SCENE_TOPIC; // "monitored_planning_scene"
+
+  //STa
+  /// The name of the topic used by default for publishing the danger evaluation markers
+  static const std::string DEFAULT_DANGER_EVAL_MARKER_TOPIC; // "/danger_eval_marker"
 
   /** @brief Constructor
    *  @param robot_description The name of the ROS parameter that contains the URDF (in string format)
@@ -351,6 +362,11 @@ public:
   void clearOctomap();
 
 protected:
+
+  //STa
+  double computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const;
+  double computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const;
+  double computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate) const;
 
   /** @brief Initialize the planning scene monitor
    *  @param scene The scene instance to fill with data (an instance is allocated if the one passed in is not allocated) */

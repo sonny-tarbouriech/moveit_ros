@@ -109,6 +109,9 @@ const std::string planning_scene_monitor::PlanningSceneMonitor::DEFAULT_PLANNING
 const std::string planning_scene_monitor::PlanningSceneMonitor::DEFAULT_PLANNING_SCENE_SERVICE = "get_planning_scene";
 const std::string planning_scene_monitor::PlanningSceneMonitor::MONITORED_PLANNING_SCENE_TOPIC = "monitored_planning_scene";
 
+//STa
+const std::string planning_scene_monitor::PlanningSceneMonitor::DEFAULT_DANGER_EVAL_MARKER_TOPIC = "/danger_eval_marker";
+
 planning_scene_monitor::PlanningSceneMonitor::PlanningSceneMonitor(const std::string &robot_description, const boost::shared_ptr<tf::Transformer> &tf, const std::string &name) :
   monitor_name_(name), nh_("~"), tf_(tf)
 {
@@ -301,8 +304,380 @@ void planning_scene_monitor::PlanningSceneMonitor::startPublishingPlanningScene(
     ROS_INFO("Publishing maintained planning scene on '%s'", planning_scene_topic.c_str());
     monitorDiffs(true);
     publish_planning_scene_.reset(new boost::thread(boost::bind(&PlanningSceneMonitor::scenePublishingThread, this)));
+
+    //STa
+    danger_eval_marker_publisher_ = nh_.advertise<visualization_msgs::MarkerArray>(DEFAULT_DANGER_EVAL_MARKER_TOPIC, 10);
   }
 }
+
+//STa
+visualization_msgs::Marker createSphere(int sphere_id, float x, float y, float z, float radius, std_msgs::ColorRGBA color)
+{
+	visualization_msgs::Marker marker;
+	marker.header.frame_id = "base";
+	std::stringstream ss;
+	ss << "sphere" << sphere_id;
+	marker.ns = ss.str();
+
+	geometry_msgs::Pose pose;
+	pose.position.x = x;
+	pose.position.y = y;
+	pose.position.z = z;
+	pose.orientation.x = 0;
+	pose.orientation.y = 0;
+	pose.orientation.z = 0;
+	pose.orientation.w = 1.0;
+
+	marker.pose = pose;
+	marker.type = visualization_msgs::Marker::SPHERE;
+	marker.scale.x = 2*radius;
+	marker.scale.y = 2*radius;
+	marker.scale.z = 2*radius;
+
+	marker.color = color;
+
+	return marker;
+}
+
+//STa
+visualization_msgs::Marker createBox(int box_id, const double position[3], const double orientation[4], const double size[3])
+{
+	visualization_msgs::Marker marker;
+	marker.header.frame_id = "base";
+	std::stringstream ss;
+	ss << "box" << box_id;
+	marker.ns = ss.str();
+
+	geometry_msgs::Pose pose;
+	pose.position.x = position[0];
+	pose.position.y = position[1];
+	pose.position.z = position[2];
+	pose.orientation.x = orientation[0];
+	pose.orientation.y = orientation[1];
+	pose.orientation.z = orientation[2];
+	pose.orientation.w = orientation[3];
+
+	marker.pose = pose;
+	marker.type = visualization_msgs::Marker::CUBE;
+	marker.scale.x = size[0];
+	marker.scale.y = size[1];
+	marker.scale.z = size[2];
+
+	marker.color.a = 0.2;
+	marker.color.r = 1;
+	marker.color.g = 0;
+	marker.color.b = 0;
+
+	return marker;
+}
+
+double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const
+{
+	std::vector<std::vector< std::string > > safety_links_name_cc_;
+	safety_links_name_cc_.resize(3);
+
+	safety_links_name_cc_[0].push_back("right_upper_shoulder");
+	safety_links_name_cc_[0].push_back("right_lower_shoulder");
+	safety_links_name_cc_[0].push_back("right_upper_elbow");
+	safety_links_name_cc_[0].push_back("right_upper_elbow_visual");
+	safety_links_name_cc_[0].push_back("right_lower_elbow");
+
+	safety_links_name_cc_[1].push_back("right_upper_forearm");
+	safety_links_name_cc_[1].push_back("right_upper_forearm_visual");
+	safety_links_name_cc_[1].push_back("right_lower_forearm");
+
+	safety_links_name_cc_[2].push_back("right_wrist");
+	safety_links_name_cc_[2].push_back("right_hand");
+	safety_links_name_cc_[2].push_back("right_gripper_base");
+	safety_links_name_cc_[2].push_back("right_gripper");
+	safety_links_name_cc_[2].push_back("right_hand_accelerometer");
+	safety_links_name_cc_[2].push_back("right_hand_camera");
+	safety_links_name_cc_[2].push_back("right_hand_range");
+
+	const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_= static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());;
+	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_padded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobot().get())));
+
+	//TEST
+	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobotUnpadded().get())));
+
+
+	std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
+
+	float min_dist = std::numeric_limits<float>::infinity();
+	double temp_dist;
+	for (size_t i = 0; i < fcl_collision_obj_.size(); ++i)
+	{
+		temp_dist = safe_collision_world_fcl_->distanceRobot(safe_collision_robot_fcl_unpadded_, *kstate,  &scene_->getAllowedCollisionMatrix(), safety_links_name_cc_[link_index], i);
+		if (temp_dist < min_dist)
+			min_dist = temp_dist;
+	}
+	return min_dist;
+}
+
+double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const
+{
+	std::vector<std::vector< std::string > > safety_links_name_cc_;
+	safety_links_name_cc_.resize(3);
+
+	safety_links_name_cc_[0].push_back("right_upper_shoulder");
+	safety_links_name_cc_[0].push_back("right_lower_shoulder");
+	safety_links_name_cc_[0].push_back("right_upper_elbow");
+	safety_links_name_cc_[0].push_back("right_upper_elbow_visual");
+	safety_links_name_cc_[0].push_back("right_lower_elbow");
+
+	safety_links_name_cc_[1].push_back("right_upper_forearm");
+	safety_links_name_cc_[1].push_back("right_upper_forearm_visual");
+	safety_links_name_cc_[1].push_back("right_lower_forearm");
+
+	safety_links_name_cc_[2].push_back("right_wrist");
+	safety_links_name_cc_[2].push_back("right_hand");
+	safety_links_name_cc_[2].push_back("right_gripper_base");
+	safety_links_name_cc_[2].push_back("right_gripper");
+	safety_links_name_cc_[2].push_back("right_hand_accelerometer");
+	safety_links_name_cc_[2].push_back("right_hand_camera");
+	safety_links_name_cc_[2].push_back("right_hand_range");
+
+
+	const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_ = static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());
+	std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
+
+	float min_dist = std::numeric_limits<float>::infinity();
+	double temp_dist;
+	double sample_length;
+	int nb_sample;
+
+	visualization_msgs::MarkerArray	marker;
+	std_msgs::ColorRGBA color;
+
+	for (size_t h = 0; h < fcl_collision_obj_.size(); ++h)
+	{
+		Eigen::Vector3d box_position(fcl_collision_obj_[h]->getTranslation().data.vs);
+		fcl::Quaternion3f box_rotation = fcl_collision_obj_[h]->getQuatRotation();
+		double rot[4] = {box_rotation.getX(), box_rotation.getY(), box_rotation.getZ(), box_rotation.getW()};
+
+		fcl::Vec3f max_in_box_frame = fcl_collision_obj_[h]->collisionGeometry()->aabb_local.max_;
+		fcl::Vec3f min_in_box_frame = fcl_collision_obj_[h]->collisionGeometry()->aabb_local.min_;
+
+		//VISUALIZE : Bounding boxes
+		double box_size[3] = {max_in_box_frame[0]-min_in_box_frame[0], max_in_box_frame[1]-min_in_box_frame[1], max_in_box_frame[2]-min_in_box_frame[2]};
+		color.a = 0.2; color.r = 1; color.g = 0; color.b = 0;
+		marker.markers.push_back(createBox(h, box_position.data(), rot, box_size));
+
+		for(size_t i = 0; i < safety_links_name_cc_[link_index].size(); ++i)
+		{
+
+			shapes::ShapeConstPtr link_shape = kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getShapes()[0];
+			const EigenSTL::vector_Affine3d link_offset_STL = kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getCollisionOriginTransforms();
+			Eigen::Vector3d link_offset;
+
+			//TODO: Problem if link has orientation offset
+			link_offset << link_offset_STL[0].translation()[0], link_offset_STL[0].translation()[1], link_offset_STL[0].translation()[2];
+			Eigen::Vector3d link_position = kstate->getGlobalLinkTransform(safety_links_name_cc_[link_index][i]).translation();
+			Eigen::Matrix3d link_rotation = kstate->getGlobalLinkTransform(safety_links_name_cc_[link_index][i]).rotation();
+
+			if (link_shape->type == shapes::CYLINDER)
+			{
+				const shapes::Cylinder* cylinder = static_cast<const shapes::Cylinder*>(link_shape.get());
+
+				sample_length = 2*cylinder->radius;
+				nb_sample = std::ceil((cylinder->length) / sample_length);
+				double adjusted_sample_length = (cylinder->length)/(nb_sample);
+				Eigen::Vector3d cylinder_offset, sample_step;
+				cylinder_offset << 0, 0, cylinder->length / 2;
+				sample_step << 0, 0, adjusted_sample_length;
+
+				double sample_radius = std::sqrt(std::pow(cylinder->radius,2) + std::pow(adjusted_sample_length/2,2));
+
+				//STa temp
+//				ROS_WARN_STREAM("cylinder sample_radius = " << sample_radius << "; cylinder->radius = " << cylinder->radius);
+
+
+				for (size_t j = 0; j < nb_sample; ++j)
+				{
+
+					Eigen::Vector3d sample_offset = -cylinder_offset + link_offset + j * sample_step + (sample_step/2);
+					Eigen::Vector3d sample_position = link_position + link_rotation * sample_offset;
+
+					//VISUALIZE : sample position
+					color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
+					marker.markers.push_back(createSphere(link_index*100 + i* 10 +j  , float(sample_position[0]), float(sample_position[1]), float(sample_position[2]), sample_radius, color));
+
+
+					//If obstacle is too far, we can iterate.
+					double max_param = std::max(fcl_collision_obj_[h]->getAABB().depth(), std::max(fcl_collision_obj_[h]->getAABB().height(), fcl_collision_obj_[h]->getAABB().width()));
+					if((box_position - sample_position).norm() - max_param < min_dist)
+					{
+						fcl::Transform3f Id;
+						Id.setIdentity();
+						fcl::Transform3f inverse_transform = fcl_collision_obj_[h]->getTransform().inverseTimes(Id);
+
+						fcl::Vec3f sample_position_fcl(sample_position[0], sample_position[1], sample_position[2]);
+						fcl::Vec3f sample_position_in_box_frame = inverse_transform.transform(sample_position_fcl);
+
+						fcl::Vec3f box_nearest_point_in_box_frame;
+
+						for(size_t k=0; k < 3; ++k)
+						{
+							if (sample_position_in_box_frame[k] < min_in_box_frame[k])
+								box_nearest_point_in_box_frame[k] = min_in_box_frame[k];
+							else if (sample_position_in_box_frame[k] > max_in_box_frame[k])
+								box_nearest_point_in_box_frame[k] = max_in_box_frame[k];
+							else
+								box_nearest_point_in_box_frame[k] = sample_position_in_box_frame[k];
+						}
+
+						fcl::Vec3f box_nearest_point_fcl = fcl_collision_obj_[h]->getTransform().transform(box_nearest_point_in_box_frame);
+						Eigen::Vector3d box_nearest_point(box_nearest_point_fcl.data.vs);
+
+						//VISUALIZE : min point of objects
+//						color.a = 1; color.r = 0; color.g = 1; color.b = 0;
+//						marker.markers.push_back(createSphere(j+100000, box_nearest_point[0], box_nearest_point[1], box_nearest_point[2], 0.05, color));
+
+						temp_dist = (box_nearest_point - sample_position).norm();
+
+						temp_dist -= sample_radius;
+
+						if (temp_dist < min_dist)
+						{
+							min_dist = temp_dist;
+						}
+
+						if (min_dist <= 0)
+						{
+							//				ROS_WARN_STREAM("Exit computeLinkMinObstacleDist");
+							danger_eval_marker_publisher_.publish(marker);
+							ros::Duration(0.1).sleep();
+							return  0;
+						}
+					}
+				}
+			}
+			else if (link_shape->type == shapes::BOX)
+			{
+				const shapes::Box* box = static_cast<const shapes::Box*>(link_shape.get());
+
+				std::vector<std::pair<size_t, double> > box_size;
+				box_size.push_back(std::pair<size_t, double> (0, box->size[0]));
+				box_size.push_back(std::pair<size_t, double> (1, box->size[1]));
+				box_size.push_back(std::pair<size_t, double> (2, box->size[2]));
+				std::sort(box_size.begin(), box_size.end(),
+				          boost::bind(&std::pair<size_t, double>::second, _1) >
+				          boost::bind(&std::pair<size_t, double>::second, _2));
+
+				sample_length = 2*box_size[1].second;
+				nb_sample = std::ceil(box_size[0].second / sample_length);
+				double adjusted_sample_length = (box_size[0].second)/(nb_sample);
+				Eigen::Vector3d box_offset, sample_step;
+				box_offset << ((box->size[0] == box_size[0].first) ? box_size[0].second/2 : 0), ((box->size[1] == box_size[0].first) ? box_size[0].second/2 : 0), ((box->size[2] == box_size[0].first) ? box_size[0].second/2 : 0);
+				sample_step << ((box->size[0] == box_size[0].first) ? adjusted_sample_length : 0), ((box->size[1] == box_size[0].first) ? adjusted_sample_length : 0), ((box->size[2] == box_size[0].first) ? adjusted_sample_length : 0);
+
+				double sample_radius;
+				if (box->size[0] == box_size[0].second)
+					sample_radius = std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[1],2)  + std::pow(box->size[2],2));
+				else if (box->size[1] == box_size[0].second)
+					sample_radius = std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[0],2)  + std::pow(box->size[2],2));
+				else
+					sample_radius = std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[0],2)  + std::pow(box->size[1],2));
+
+//				//STa temp
+//				ROS_WARN_STREAM("box sample_radius = " << sample_radius << "; box max_size = " << box_size[0].second);
+//				ROS_WARN_STREAM("box nb samples = " << nb_sample << "; adjusted_sample_length = " << adjusted_sample_length);
+
+
+				for (size_t j = 0; j < nb_sample; ++j)
+				{
+
+					Eigen::Vector3d sample_offset = -box_offset + link_offset + j * sample_step + (sample_step/2);
+					Eigen::Vector3d sample_position = link_position + link_rotation * sample_offset;
+
+					//VISUALIZE : sample position
+					if (nb_sample > 1)
+					{
+						color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
+						marker.markers.push_back(createSphere(link_index*100 + i*10 + j  , float(sample_position[0]), float(sample_position[1]), float(sample_position[2]), sample_radius, color));
+					}
+
+					//If obstacle is too far, we can iterate.
+					double max_center_dist = std::sqrt(std::pow(fcl_collision_obj_[h]->getAABB().depth(), 2) + std::pow(fcl_collision_obj_[h]->getAABB().height(), 2)+ std::pow(fcl_collision_obj_[h]->getAABB().width(),2));
+					if((box_position - sample_position).norm() - max_center_dist < min_dist)
+					{
+						fcl::Transform3f Id;
+						Id.setIdentity();
+						fcl::Transform3f inverse_transform = fcl_collision_obj_[h]->getTransform().inverseTimes(Id);
+
+						fcl::Vec3f sample_position_fcl(sample_position[0], sample_position[1], sample_position[2]);
+						fcl::Vec3f sample_position_in_box_frame = inverse_transform.transform(sample_position_fcl);
+
+						fcl::Vec3f box_nearest_point_in_box_frame;
+
+						for(size_t k=0; k < 3; ++k)
+						{
+							if (sample_position_in_box_frame[k] < min_in_box_frame[k])
+								box_nearest_point_in_box_frame[k] = min_in_box_frame[k];
+							else if (sample_position_in_box_frame[k] > max_in_box_frame[k])
+								box_nearest_point_in_box_frame[k] = max_in_box_frame[k];
+							else
+								box_nearest_point_in_box_frame[k] = sample_position_in_box_frame[k];
+						}
+
+						fcl::Vec3f box_nearest_point_fcl = fcl_collision_obj_[h]->getTransform().transform(box_nearest_point_in_box_frame);
+						Eigen::Vector3d box_nearest_point(box_nearest_point_fcl.data.vs);
+						temp_dist = (box_nearest_point - sample_position).norm();
+
+						temp_dist -= sample_radius;
+
+						if (temp_dist < min_dist)
+						{
+							min_dist = temp_dist;
+						}
+
+						if (min_dist <= 0)
+						{
+							//				ROS_WARN_STREAM("Exit computeLinkMinObstacleDist");
+							danger_eval_marker_publisher_.publish(marker);
+							ros::Duration(0.1).sleep();
+							return  0;
+						}
+					}
+				}
+			}
+			//TODO: If shape == sphere
+		}
+	}
+
+	danger_eval_marker_publisher_.publish(marker);
+	ros::Duration(0.01).sleep();
+	//	ROS_WARN_STREAM("Exit computeLinkMinObstacleDist");
+	return min_dist;
+}
+
+
+
+double planning_scene_monitor::PlanningSceneMonitor::computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate) const
+{
+	size_t NB_SAFETY_LINKS = 3;
+
+	float min_dist = std::numeric_limits<float>::infinity();
+	float temp_dist, exact_dist;
+	for (size_t i = 0; i < NB_SAFETY_LINKS; ++i)
+	{
+		temp_dist = computeLinkApproxMinObstacleDist(kstate, i);
+//		exact_dist = computeLinkExactMinObstacleDist(kstate, i);
+//		ROS_INFO_STREAM("Approx = " << temp_dist <<"; Exact = " << exact_dist);
+
+//		if (exact_dist < temp_dist)
+//			ROS_WARN_STREAM("exact_dist < approx_dist for link " << i);
+
+		if (temp_dist < min_dist)
+			min_dist = temp_dist;
+		if (min_dist <= 0)
+		{
+			return  0;
+		}
+	}
+	return min_dist;
+}
+
 
 void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 {
@@ -363,6 +738,23 @@ void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
         new_scene_update_ = UPDATE_NONE;
       }
     }
+
+		//STa
+		if (! scene_->getCollisionWorld()->getWorld()->getObjectIds().empty())
+		{
+//			double temp_dist, min_dist = 10000000;
+//			for (size_t i=0; i<3; ++i)
+//			{
+//				temp_dist = computeLinkExactMinObstacleDist(&scene_->getCurrentState(),i);
+//				if (temp_dist < min_dist)
+//					min_dist = temp_dist;
+//			}
+//			ROS_INFO_STREAM("exact distance = " << min_dist);
+
+//			double dist_simple = computeRobotApproxMinObstacleDist(&scene_->getCurrentState());
+//			ROS_INFO_STREAM("approx distance = " << dist_simple);
+		}
+
     if (publish_msg)
     {
       rate.reset();
