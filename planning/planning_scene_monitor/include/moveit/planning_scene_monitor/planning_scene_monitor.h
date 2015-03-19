@@ -454,6 +454,9 @@ protected:
 
   ros::Subscriber                       attached_collision_object_subscriber_;
 
+  // STa
+  ros::Publisher                        danger_eval_marker_publisher_;
+
   boost::scoped_ptr<message_filters::Subscriber<moveit_msgs::CollisionObject> > collision_object_subscriber_;
   boost::scoped_ptr<tf::MessageFilter<moveit_msgs::CollisionObject> > collision_object_filter_;
 
