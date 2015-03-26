@@ -260,6 +260,8 @@ bool planning_pipeline::PlanningPipeline::generatePlan(const planning_scene::Pla
     if (check_solution_paths_)
     {
       std::vector<std::size_t> index;
+      //STa temp : Uncomment to avoid path validity checking
+//      if(false)
       if (!planning_scene->isPathValid(*res.trajectory_, req.path_constraints, req.group_name, false, &index))
       {
         // check to see if there is any problem with the states that are found to be invalid
