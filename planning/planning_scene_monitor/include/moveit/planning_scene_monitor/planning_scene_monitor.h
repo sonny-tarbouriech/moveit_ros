@@ -368,6 +368,8 @@ protected:
   double computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const;
   double computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate) const;
 
+  double humanAwareness(const robot_state::RobotState *kstate) const;
+
   /** @brief Initialize the planning scene monitor
    *  @param scene The scene instance to fill with data (an instance is allocated if the one passed in is not allocated) */
   void initialize(const planning_scene::PlanningScenePtr &scene);

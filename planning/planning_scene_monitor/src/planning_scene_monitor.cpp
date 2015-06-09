@@ -679,6 +679,38 @@ double planning_scene_monitor::PlanningSceneMonitor::computeRobotApproxMinObstac
 }
 
 
+double planning_scene_monitor::PlanningSceneMonitor::humanAwareness(const robot_state::RobotState *kstate) const
+{
+	std::vector<Eigen::Affine3d> human_eye_gaze_;
+	moveit::core::FixedTransformsMap transform = scene_->getTransforms().getAllTransforms();
+	for (moveit::core::FixedTransformsMap::iterator it = transform.begin(); it != transform.end(); ++it)
+	{
+		if (it->first.find("human_eye_gaze") != std::string::npos)
+			human_eye_gaze_.push_back(it->second);
+	}
+
+	Eigen::Affine3d end_effector_transform;
+
+	end_effector_transform = kstate->getGlobalLinkTransform("right_gripper");
+
+
+	double worst_value;
+
+	for(size_t i=0; i < human_eye_gaze_.size(); ++i)
+	{
+		Eigen::Vector3d hum_to_eef = end_effector_transform.translation() - human_eye_gaze_[i].translation();
+		Eigen::Vector3d hum_direction = human_eye_gaze_[i] * Eigen::Vector3d(1, 0, 0)- human_eye_gaze_[i].translation();
+		double ang_dist = Eigen::Quaterniond::FromTwoVectors(hum_to_eef,hum_direction).angularDistance( Eigen::Quaterniond::Identity());
+
+//		ROS_WARN_STREAM("hum_to_eef = " << hum_to_eef);
+//		ROS_WARN_STREAM("hum_direction = " << hum_direction);
+//		ROS_WARN_STREAM("ang_dist = " << ang_dist);
+//		std::cout << "\n";
+	}
+
+	return worst_value;
+}
+
 void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 {
 	ROS_DEBUG("Started scene publishing thread ...");
@@ -753,6 +785,8 @@ void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 //
 //			double dist_simple = computeRobotApproxMinObstacleDist(&scene_->getCurrentState());
 //			ROS_INFO_STREAM("approx distance = " << dist_simple);
+//
+//			humanAwareness(&scene_->getCurrentState());
 //		}
 
 		if (publish_msg)
@@ -1576,10 +1610,13 @@ void planning_scene_monitor::PlanningSceneMonitor::getUpdatedFrameTransforms(std
 		}
 		catch (tf::TransformException& ex)
 		{
-			ROS_WARN_STREAM("Unable to transform object from frame '" << all_frame_names[i] << "' to planning frame '" <<
-					target << "' (" << ex.what() << ")");
+			//STa comment warning
+//			ROS_WARN_STREAM("Unable to transform object from frame '" << all_frame_names[i] << "' to planning frame '" <<
+//					target << "' (" << ex.what() << ")");
 			continue;
 		}
+
+
 
 		geometry_msgs::TransformStamped f;
 		f.header.frame_id = frame_with_slash;
