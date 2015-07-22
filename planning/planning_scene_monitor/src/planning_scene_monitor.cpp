@@ -681,13 +681,37 @@ double planning_scene_monitor::PlanningSceneMonitor::computeRobotApproxMinObstac
 
 double planning_scene_monitor::PlanningSceneMonitor::humanAwareness(const robot_state::RobotState *kstate) const
 {
+	const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl = static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());
+	std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl->getCollisionObjects();
+	std::vector<std::string> co_names = safe_collision_world_fcl->getCollisionObjectNames();
+
 	std::vector<Eigen::Affine3d> human_eye_gaze_;
-	moveit::core::FixedTransformsMap transform = scene_->getTransforms().getAllTransforms();
-	for (moveit::core::FixedTransformsMap::iterator it = transform.begin(); it != transform.end(); ++it)
+
+	for(size_t i=0; i < co_names.size(); ++i)
 	{
-		if (it->first.find("human_eye_gaze") != std::string::npos)
-			human_eye_gaze_.push_back(it->second);
+		if (co_names[i].find("human_eye_gaze") != std::string::npos)
+		{
+			fcl::Quaternion3f fcl_q = fcl_collision_obj_[i]->getTransform().getQuatRotation();
+			fcl::Vec3f fcl_pos = fcl_collision_obj_[i]->getTransform().getTranslation();
+			Eigen::Quaterniond q(fcl_q.getW(), fcl_q.getX(), fcl_q.getY(), fcl_q.getZ());
+			Eigen::Vector3d pos(fcl_pos.data[0], fcl_pos.data[1], fcl_pos.data[2]);
+			Eigen::Vector3d scale(1,1,1);
+			Eigen::Affine3d aff;
+			aff.fromPositionOrientationScale(pos,q,scale);
+
+			human_eye_gaze_.push_back(aff);
+
+		}
 	}
+
+
+//	std::vector<Eigen::Affine3d> human_eye_gaze_;
+//	moveit::core::FixedTransformsMap transform = scene_->getTransforms().getAllTransforms();
+//	for (moveit::core::FixedTransformsMap::iterator it = transform.begin(); it != transform.end(); ++it)
+//	{
+//		if (it->first.find("human_eye_gaze") != std::string::npos)
+//			human_eye_gaze_.push_back(it->second);
+//	}
 
 	Eigen::Affine3d end_effector_transform;
 
@@ -699,13 +723,21 @@ double planning_scene_monitor::PlanningSceneMonitor::humanAwareness(const robot_
 	for(size_t i=0; i < human_eye_gaze_.size(); ++i)
 	{
 		Eigen::Vector3d hum_to_eef = end_effector_transform.translation() - human_eye_gaze_[i].translation();
-		Eigen::Vector3d hum_direction = human_eye_gaze_[i] * Eigen::Vector3d(1, 0, 0)- human_eye_gaze_[i].translation();
-		double ang_dist = Eigen::Quaterniond::FromTwoVectors(hum_to_eef,hum_direction).angularDistance( Eigen::Quaterniond::Identity());
 
-//		ROS_WARN_STREAM("hum_to_eef = " << hum_to_eef);
-//		ROS_WARN_STREAM("hum_direction = " << hum_direction);
-//		ROS_WARN_STREAM("ang_dist = " << ang_dist);
-//		std::cout << "\n";
+		if(hum_to_eef.norm() < 2)
+		{
+			Eigen::Vector3d hum_direction = human_eye_gaze_[i] * Eigen::Vector3d(1, 0, 0)- human_eye_gaze_[i].translation();
+			double value = Eigen::Quaterniond::FromTwoVectors(hum_to_eef,hum_direction).angularDistance( Eigen::Quaterniond::Identity());
+
+			if (value > worst_value)
+				worst_value = value;
+
+			ROS_WARN_STREAM("hum_to_eef = " << hum_to_eef);
+			ROS_WARN_STREAM("hum_direction = " << hum_direction);
+			ROS_WARN_STREAM("ang_dist = " << value);
+			std::cout << "\n";
+
+		}
 	}
 
 	return worst_value;
