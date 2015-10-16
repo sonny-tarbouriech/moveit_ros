@@ -229,12 +229,12 @@ void planning_scene_monitor::PlanningSceneMonitor::initialize(const planning_sce
 
 	state_update_pending_ = false;
 	state_update_timer_ = nh_.createWallTimer(dt_state_update_,
-			&PlanningSceneMonitor::stateUpdateTimerCallback,
-			this,
-			false,    // not a oneshot timer
-			false);   // do not start the timer yet
+	        &PlanningSceneMonitor::stateUpdateTimerCallback,
+	        this,
+	        false,    // not a oneshot timer
+	        false);   // do not start the timer yet
 
-			reconfigure_impl_ = new DynamicReconfigureImpl(this);
+	reconfigure_impl_ = new DynamicReconfigureImpl(this);
 }
 
 void planning_scene_monitor::PlanningSceneMonitor::monitorDiffs(bool flag)
@@ -307,6 +307,8 @@ void planning_scene_monitor::PlanningSceneMonitor::startPublishingPlanningScene(
 
 		//STa
 		danger_eval_marker_publisher_ = nh_.advertise<visualization_msgs::MarkerArray>(DEFAULT_DANGER_EVAL_MARKER_TOPIC, 10);
+//		//STa : Construct a collision model with meshes
+//		safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(scene_->getRobotModel(), 0, 1);
 	}
 }
 
@@ -340,7 +342,7 @@ visualization_msgs::Marker createSphere(int sphere_id, float x, float y, float z
 }
 
 //STa
-visualization_msgs::Marker createBox(int box_id, const double position[3], const double orientation[4], const double size[3])
+visualization_msgs::Marker createBox(int box_id, const double position[3], const double orientation[4], const double size[3], std_msgs::ColorRGBA color)
 {
 	visualization_msgs::Marker marker;
 	marker.header.frame_id = "base";
@@ -363,13 +365,36 @@ visualization_msgs::Marker createBox(int box_id, const double position[3], const
 	marker.scale.y = size[1];
 	marker.scale.z = size[2];
 
-	marker.color.a = 0.2;
-	marker.color.r = 1;
-	marker.color.g = 0;
-	marker.color.b = 0;
+	marker.color = color;
 
 	return marker;
 }
+
+//STa
+visualization_msgs::Marker createText(int text_id, float x, float y, float z, float height, std::string text,  std_msgs::ColorRGBA color)
+{
+    visualization_msgs::Marker marker;
+    marker.header.frame_id = "base";
+    std::stringstream ss;
+    ss << "text" << text_id;
+    marker.ns = ss.str();
+
+    geometry_msgs::Pose pose;
+    pose.position.x = x;
+    pose.position.y = y;
+    pose.position.z = z;
+
+    marker.pose = pose;
+    marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    marker.scale.z = height;
+    marker.text = text;
+
+    marker.color = color;
+
+    return marker;
+}
+
+
 
 double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const
 {
@@ -395,10 +420,10 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacle
 	safety_links_name_cc_[2].push_back("right_hand_range");
 
 	const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_= static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());;
-	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_padded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobot().get())));
+//	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_padded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobot().get())));
 
 	//TEST
-	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobotUnpadded().get())));
+//	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobotUnpadded().get())));
 
 
 	std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
@@ -413,6 +438,52 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacle
 	}
 	return min_dist;
 }
+
+double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index, fcl::DistanceResult& result) const
+{
+    std::vector<std::vector< std::string > > safety_links_name_cc_;
+    safety_links_name_cc_.resize(3);
+
+    safety_links_name_cc_[0].push_back("right_upper_shoulder");
+    safety_links_name_cc_[0].push_back("right_lower_shoulder");
+    safety_links_name_cc_[0].push_back("right_upper_elbow");
+    safety_links_name_cc_[0].push_back("right_upper_elbow_visual");
+    safety_links_name_cc_[0].push_back("right_lower_elbow");
+
+    safety_links_name_cc_[1].push_back("right_upper_forearm");
+    safety_links_name_cc_[1].push_back("right_upper_forearm_visual");
+    safety_links_name_cc_[1].push_back("right_lower_forearm");
+
+    safety_links_name_cc_[2].push_back("right_wrist");
+    safety_links_name_cc_[2].push_back("right_hand");
+    safety_links_name_cc_[2].push_back("right_gripper_base");
+    safety_links_name_cc_[2].push_back("right_gripper");
+    safety_links_name_cc_[2].push_back("right_hand_accelerometer");
+    safety_links_name_cc_[2].push_back("right_hand_camera");
+    safety_links_name_cc_[2].push_back("right_hand_range");
+
+    const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_= static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());;
+//    collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_padded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobot().get())));
+
+    //TEST
+//    collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobotUnpadded().get())));
+
+    std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
+
+    fcl::DistanceResult result_temp;
+    float min_dist = std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < fcl_collision_obj_.size(); ++i)
+    {
+        if(safe_collision_world_fcl_->distanceRobot(safe_collision_robot_fcl_unpadded_, *kstate,  &scene_->getAllowedCollisionMatrix(), safety_links_name_cc_[link_index], i, result_temp)< min_dist)
+        {
+            min_dist = result_temp.min_distance;
+            result = result_temp;
+        }
+    }
+
+    return min_dist;
+}
+
 
 double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const
 {
@@ -461,7 +532,7 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacl
 		//VISUALIZE : Bounding boxes
 		double box_size[3] = {max_in_box_frame[0]-min_in_box_frame[0], max_in_box_frame[1]-min_in_box_frame[1], max_in_box_frame[2]-min_in_box_frame[2]};
 		color.a = 0.2; color.r = 1; color.g = 0; color.b = 0;
-		marker.markers.push_back(createBox(h, box_position.data(), rot, box_size));
+		marker.markers.push_back(createBox(h, box_position.data(), rot, box_size, color));
 
 		for(size_t i = 0; i < safety_links_name_cc_[link_index].size(); ++i)
 		{
@@ -529,9 +600,9 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacl
 							fcl::Vec3f box_nearest_point_fcl = fcl_collision_obj_[h]->getTransform().transform(box_nearest_point_in_box_frame);
 							Eigen::Vector3d box_nearest_point(box_nearest_point_fcl.data.vs);
 
-							//VISUALIZE : min point of objects
-							//						color.a = 1; color.r = 0; color.g = 1; color.b = 0;
-							//						marker.markers.push_back(createSphere(j+100000, box_nearest_point[0], box_nearest_point[1], box_nearest_point[2], 0.05, color));
+//							//VISUALIZE : min point of objects
+//							color.a = 1; color.r = 0; color.g = 1; color.b = 0;
+//							marker.markers.push_back(createSphere(j+100000, float(box_nearest_point[0]), float(box_nearest_point[1]), float(box_nearest_point[2]), 0.05, color));
 
 							temp_dist = (box_nearest_point - sample_position).norm();
 
@@ -570,8 +641,8 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacl
 					nb_sample = std::ceil(box_size[0].second / sample_length);
 					double adjusted_sample_length = (box_size[0].second)/(nb_sample);
 					Eigen::Vector3d box_offset, sample_step;
-					box_offset << ((box->size[0] == box_size[0].first) ? box_size[0].second/2 : 0), ((box->size[1] == box_size[0].first) ? box_size[0].second/2 : 0), ((box->size[2] == box_size[0].first) ? box_size[0].second/2 : 0);
-					sample_step << ((box->size[0] == box_size[0].first) ? adjusted_sample_length : 0), ((box->size[1] == box_size[0].first) ? adjusted_sample_length : 0), ((box->size[2] == box_size[0].first) ? adjusted_sample_length : 0);
+					box_offset << ((box_size[0].first == 0) ? box_size[0].second/2 : 0), ((box_size[0].first == 1) ? box_size[0].second/2 : 0), ((box_size[0].first == 2) ? box_size[0].second/2 : 0);
+					sample_step << ((box_size[0].first == 0) ? adjusted_sample_length : 0), ((box_size[0].first == 1) ? adjusted_sample_length : 0), ((box_size[0].first == 2) ? adjusted_sample_length : 0);
 
 					double sample_radius;
 					if (box->size[0] == box_size[0].second)
@@ -625,7 +696,22 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacl
 
 							temp_dist -= sample_radius;
 
-							if (temp_dist < min_dist)
+							if (temp_dist < min_dist)//         output_file_
+							    //          << ros::WallTime::now() <<  "     "
+							    //          << scene_->getCurrentState().getVariablePosition("right_s0") <<  " "
+							    //          << scene_->getCurrentState().getVariablePosition("right_s1") <<  " "
+							    //          << scene_->getCurrentState().getVariablePosition("right_e0") <<  " "
+							    //          << scene_->getCurrentState().getVariablePosition("right_e1") <<  " "
+							    //          << scene_->getCurrentState().getVariablePosition("right_w0") <<  " "
+							    //          << scene_->getCurrentState().getVariablePosition("right_w1") <<  " "
+							    //          << scene_->getCurrentState().getVariablePosition("right_w2") <<  "      "
+							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(0) <<  " "
+							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(1) <<  " "
+							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(2) <<  " "
+							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(0) <<  " "
+							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(1) <<  " "
+							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(2) <<  " "
+							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(3) <<  "\n";
 							{
 								min_dist = temp_dist;
 							}
@@ -743,6 +829,68 @@ double planning_scene_monitor::PlanningSceneMonitor::humanAwareness(const robot_
 	return worst_value;
 }
 
+void planning_scene_monitor::PlanningSceneMonitor::outputData(double min_dist_obstacle) const
+{
+        std::string homepath = getenv("HOME");
+        std::ofstream output_file;
+        output_file.open((homepath + "/data_psm.txt").c_str(), std::ios::out | std::ios::app);
+
+        output_file
+        << ros::WallTime::now() <<  " "
+        << scene_->getCurrentState().getVariablePosition("right_s0") <<  " "
+        << scene_->getCurrentState().getVariablePosition("right_s1") <<  " "
+        << scene_->getCurrentState().getVariablePosition("right_e0") <<  " "
+        << scene_->getCurrentState().getVariablePosition("right_e1") <<  " "
+        << scene_->getCurrentState().getVariablePosition("right_w0") <<  " "
+        << scene_->getCurrentState().getVariablePosition("right_w1") <<  " "
+        << scene_->getCurrentState().getVariablePosition("right_w2") <<  " "
+        << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(0) <<  " "
+        << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(1) <<  " "
+        << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(2) <<  " "
+        << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(0) <<  " "
+        << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(1) <<  " "
+        << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(2) <<  " "
+        << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(3) <<  " "
+        << min_dist_obstacle << "\n";
+
+
+}
+
+void planning_scene_monitor::PlanningSceneMonitor::publishMinDistMarkers(fcl::DistanceResult result)const
+{
+    visualization_msgs::MarkerArray marker;
+    std_msgs::ColorRGBA color;
+
+    color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
+
+    marker.markers.push_back(createSphere(1000000, float(result.nearest_points[0].data[0]), float(result.nearest_points[0].data[1]), float(result.nearest_points[0].data[2]), 0.01, color));
+    marker.markers.push_back(createSphere(1000001, float(result.nearest_points[1].data[0]), float(result.nearest_points[1].data[1]), float(result.nearest_points[1].data[2]), 0.01, color));
+
+    fcl::Vec3f v3f = result.nearest_points[1]-result.nearest_points[0];
+    Eigen::Vector3f vec;
+    vec << v3f.data[0],  v3f.data[1],  v3f.data[2];
+    Eigen::Quaternionf quat = Eigen::Quaternionf::FromTwoVectors(Eigen::Vector3f(0, 0, 1), vec);
+    double quatd[4]={quat.x(),quat.y(),quat.z(),quat.w()};
+    fcl::Vec3f position =  (result.nearest_points[1]+result.nearest_points[0])/2;
+    double size[3] = {0.01, 0.01, vec.norm()};
+
+//    ROS_WARN_STREAM("pt0 = " << result.nearest_points[0]);
+//    ROS_WARN_STREAM("pt1 = " << result.nearest_points[1]);
+//    ROS_WARN_STREAM("vec norm = " << vec.norm() << "\n");
+
+
+    marker.markers.push_back(createBox(1000002, position.data.vs, quatd, size, color));
+
+    std::stringstream ss;
+    ss << "Clearance = " << result.min_distance;
+    marker.markers.push_back(createText(1, 0, 0, 1, 0.1, ss.str(), color));
+
+    danger_eval_marker_publisher_.publish(marker);
+    ros::Duration(0.01).sleep();
+
+}
+
+
 void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 {
 	ROS_DEBUG("Started scene publishing thread ...");
@@ -756,6 +904,9 @@ void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 	}
 	planning_scene_publisher_.publish(msg);
 	ROS_DEBUG("Published the full planning scene: '%s'", msg.name.c_str());
+
+	//STa temp
+//	publish_planning_scene_frequency_ = 100;
 
 	do
 	{
@@ -806,19 +957,30 @@ void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 //		//STa
 //		if (! scene_->getCollisionWorld()->getWorld()->getObjectIds().empty())
 //		{
-//			double temp_dist, min_dist = 10000000;
+//			double temp_dist, min_dist = std::numeric_limits<double>::infinity();
+//			fcl::DistanceResult distance_result, distance_result_temp;
 //			for (size_t i=0; i<3; ++i)
 //			{
-//				temp_dist = computeLinkExactMinObstacleDist(&scene_->getCurrentState(),i);
+//				temp_dist = computeLinkExactMinObstacleDist(&scene_->getCurrentState(),i, distance_result_temp);
+//
 //				if (temp_dist < min_dist)
+//				{
 //					min_dist = temp_dist;
+//					distance_result = distance_result_temp;
+//				}
 //			}
-//			ROS_INFO_STREAM("exact distance = " << min_dist);
 //
-//			double dist_simple = computeRobotApproxMinObstacleDist(&scene_->getCurrentState());
-//			ROS_INFO_STREAM("approx distance = " << dist_simple);
+//			outputData(min_dist);
+//			publishMinDistMarkers(distance_result);
 //
-//			humanAwareness(&scene_->getCurrentState());
+//////			ROS_INFO_STREAM("exact distance = " << min_dist);
+////
+////			double dist_simple = computeRobotApproxMinObstacleDist(&scene_->getCurrentState());
+////
+//////			if (dist_simple>min_dist)
+////			    ROS_WARN_STREAM("approx = " << dist_simple << "; exact = " << min_dist);
+////
+//////			humanAwareness(&scene_->getCurrentState());
 //		}
 
 		if (publish_msg)

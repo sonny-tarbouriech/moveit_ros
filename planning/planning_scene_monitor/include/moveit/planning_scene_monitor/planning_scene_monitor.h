@@ -366,9 +366,11 @@ protected:
   //STa
   double computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const;
   double computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const;
+  double computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index, fcl::DistanceResult& result) const;
   double computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate) const;
-
   double humanAwareness(const robot_state::RobotState *kstate) const;
+  void outputData(double min_dist_obstacle = 0) const;
+  void publishMinDistMarkers(fcl::DistanceResult result)const;
 
   /** @brief Initialize the planning scene monitor
    *  @param scene The scene instance to fill with data (an instance is allocated if the one passed in is not allocated) */
@@ -458,6 +460,9 @@ protected:
 
   // STa
   ros::Publisher                        danger_eval_marker_publisher_;
+
+  //STa temp
+  collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_;
 
   boost::scoped_ptr<message_filters::Subscriber<moveit_msgs::CollisionObject> > collision_object_subscriber_;
   boost::scoped_ptr<tf::MessageFilter<moveit_msgs::CollisionObject> > collision_object_filter_;
