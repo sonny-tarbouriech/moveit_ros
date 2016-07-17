@@ -361,16 +361,27 @@ public:
 
   void clearOctomap();
 
+  //STa
+  void setPublishMotionPlanningMarkers(bool publish_motion_planning_markers)
+  {
+	  publish_motion_planning_markers_ = publish_motion_planning_markers;
+  }
+  void setPublishTrajectoryDataFile(bool publish_trajectory_data_file)
+  {
+	  publish_trajectory_data_file_ = publish_trajectory_data_file;
+  }
+
 protected:
 
   //STa
-  double computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const;
+  double computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index, fcl::DistanceResult& result) const;
   double computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const;
   double computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index, fcl::DistanceResult& result) const;
-  double computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate) const;
+  double computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate, fcl::DistanceResult& result) const;
   double humanAwareness(const robot_state::RobotState *kstate) const;
   void outputData(double min_dist_obstacle = 0) const;
   void publishMinDistMarkers(fcl::DistanceResult result)const;
+  double generateBoxesMarkersFromOctomapRecurse(visualization_msgs::MarkerArray& box_marker, const fcl::OcTree* tree, const fcl::OcTree::OcTreeNode* node, const fcl::AABB& node_bv, double precision, bool& is_occupied_inside_ws);
 
   /** @brief Initialize the planning scene monitor
    *  @param scene The scene instance to fill with data (an instance is allocated if the one passed in is not allocated) */
@@ -460,9 +471,11 @@ protected:
 
   // STa
   ros::Publisher                        danger_eval_marker_publisher_;
-
-  //STa temp
+  size_t 				box_octomap_index_;
   collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_;
+  bool publish_motion_planning_markers_;
+  bool publish_trajectory_data_file_;
+  bool start_trajectory_data_file_;
 
   boost::scoped_ptr<message_filters::Subscriber<moveit_msgs::CollisionObject> > collision_object_subscriber_;
   boost::scoped_ptr<tf::MessageFilter<moveit_msgs::CollisionObject> > collision_object_filter_;

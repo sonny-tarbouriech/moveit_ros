@@ -32,7 +32,7 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
 
-/* Author: Ioan Sucan */
+/* Author: Ioan Sucan, modifs: Sonny Tarbouriech */
 
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 #include <moveit/robot_model_loader/robot_model_loader.h>
@@ -93,6 +93,12 @@ private:
 		}
 		else
 			owner_->stopPublishingPlanningScene();
+
+		//STa
+		owner_->setPublishMotionPlanningMarkers(config.publish_motion_planning_markers);
+		owner_->setPublishTrajectoryDataFile(config.publish_trajectory_data_file);
+
+
 	}
 
 	PlanningSceneMonitor *owner_;
@@ -109,7 +115,7 @@ const std::string planning_scene_monitor::PlanningSceneMonitor::DEFAULT_PLANNING
 const std::string planning_scene_monitor::PlanningSceneMonitor::DEFAULT_PLANNING_SCENE_SERVICE = "get_planning_scene";
 const std::string planning_scene_monitor::PlanningSceneMonitor::MONITORED_PLANNING_SCENE_TOPIC = "monitored_planning_scene";
 
-//STa
+//STa: Topic to visualize some safety aspects
 const std::string planning_scene_monitor::PlanningSceneMonitor::DEFAULT_DANGER_EVAL_MARKER_TOPIC = "/danger_eval_marker";
 
 planning_scene_monitor::PlanningSceneMonitor::PlanningSceneMonitor(const std::string &robot_description, const boost::shared_ptr<tf::Transformer> &tf, const std::string &name) :
@@ -307,19 +313,20 @@ void planning_scene_monitor::PlanningSceneMonitor::startPublishingPlanningScene(
 
 		//STa
 		danger_eval_marker_publisher_ = nh_.advertise<visualization_msgs::MarkerArray>(DEFAULT_DANGER_EVAL_MARKER_TOPIC, 10);
-//		//STa : Construct a collision model with meshes
+		start_trajectory_data_file_ = true;
+
+		//STa : Construct a collision model with meshes, necessary to find nearest points using FCL distance
 //		safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(scene_->getRobotModel(), 0, 1);
 	}
 }
 
 //STa
-visualization_msgs::Marker createSphere(int sphere_id, float x, float y, float z, float radius, std_msgs::ColorRGBA color)
+visualization_msgs::Marker createSphere(std::string sphere_ns, int sphere_id, float x, float y, float z, float radius, std_msgs::ColorRGBA color)
 {
 	visualization_msgs::Marker marker;
 	marker.header.frame_id = "base";
-	std::stringstream ss;
-	ss << "sphere" << sphere_id;
-	marker.ns = ss.str();
+	marker.ns = sphere_ns;
+	marker.id = sphere_id;
 
 	geometry_msgs::Pose pose;
 	pose.position.x = x;
@@ -342,13 +349,13 @@ visualization_msgs::Marker createSphere(int sphere_id, float x, float y, float z
 }
 
 //STa
-visualization_msgs::Marker createBox(int box_id, const double position[3], const double orientation[4], const double size[3], std_msgs::ColorRGBA color)
+visualization_msgs::Marker createBox(std::string box_ns, int box_id, const double position[3], const double orientation[4], const double size[3], std_msgs::ColorRGBA color)
 {
 	visualization_msgs::Marker marker;
 	marker.header.frame_id = "base";
-	std::stringstream ss;
-	ss << "box" << box_id;
-	marker.ns = ss.str();
+	marker.ns = box_ns;
+	marker.id = box_id;
+	marker.lifetime = ros::Duration(1);
 
 	geometry_msgs::Pose pose;
 	pose.position.x = position[0];
@@ -394,8 +401,59 @@ visualization_msgs::Marker createText(int text_id, float x, float y, float z, fl
     return marker;
 }
 
+//STa
+visualization_msgs::Marker createArrowMarker(Eigen::Affine3d eye_gaze_tf, std::string marker_id, std_msgs::ColorRGBA color, double duration)
+{
+	visualization_msgs::Marker marker;
+	marker.header.frame_id = "base";
+	marker.ns = marker_id;
+	marker.action = visualization_msgs::Marker::ADD;
+	marker.lifetime = ros::Duration(duration);
+
+	Eigen::Vector3d origin = eye_gaze_tf.translation();
+
+	marker.pose.position.x  = origin.x();
+	marker.pose.position.y  = origin.y();
+	marker.pose.position.z  = origin.z();
+
+	Eigen::Quaterniond q(eye_gaze_tf.rotation());
+
+	marker.pose.orientation.x = q.x();
+	marker.pose.orientation.y = q.y();
+	marker.pose.orientation.z = q.z();
+	marker.pose.orientation.w = q.w();
 
 
+	marker.type = visualization_msgs::Marker::ARROW;
+	marker.scale.x = 0.5;
+	marker.scale.y = 0.02;
+	marker.scale.z = 0.02;
+
+	marker.color = color;
+
+	return marker;
+}
+
+//STa
+visualization_msgs::MarkerArray createAwarenessMarkerArrow(std::vector<Eigen::Affine3d>& eye_gaze_tf, double duration)
+{
+	visualization_msgs::MarkerArray ma;
+
+	for (size_t i = 0; i < eye_gaze_tf.size(); ++i)
+	{
+		std::stringstream marker_id;
+
+		marker_id << "human_eye_gaze_" << i;
+
+		std_msgs::ColorRGBA color;
+		color.a = 1.0; color.r = 0; color.g = 0; color.b = 1;
+		ma.markers.push_back(createArrowMarker(eye_gaze_tf[i], marker_id.str(), color, duration ));
+	}
+
+	return ma;
+}
+
+//STa
 double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const
 {
 	std::vector<std::vector< std::string > > safety_links_name_cc_;
@@ -420,13 +478,8 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacle
 	safety_links_name_cc_[2].push_back("right_hand_range");
 
 	const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_= static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());;
-//	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_padded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobot().get())));
 
-	//TEST
-//	collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobotUnpadded().get())));
-
-
-	std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
+	std::vector<boost::shared_ptr<fcl::CollisionObject> > fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
 
 	float min_dist = std::numeric_limits<float>::infinity();
 	double temp_dist;
@@ -458,17 +511,17 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacle
     safety_links_name_cc_[2].push_back("right_hand");
     safety_links_name_cc_[2].push_back("right_gripper_base");
     safety_links_name_cc_[2].push_back("right_gripper");
+    safety_links_name_cc_[2].push_back("r_gripper_l_finger");
+    safety_links_name_cc_[2].push_back("r_gripper_l_finger_tip");
+    safety_links_name_cc_[2].push_back("r_gripper_r_finger");
+    safety_links_name_cc_[2].push_back("r_gripper_r_finger_tip");
     safety_links_name_cc_[2].push_back("right_hand_accelerometer");
     safety_links_name_cc_[2].push_back("right_hand_camera");
     safety_links_name_cc_[2].push_back("right_hand_range");
 
     const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_= static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());;
-//    collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_padded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobot().get())));
 
-    //TEST
-//    collision_detection::SafeCollisionRobotFCL* safe_collision_robot_fcl_unpadded_ = new collision_detection::SafeCollisionRobotFCL(*(static_cast<const collision_detection::CollisionRobotFCL*> (scene_->getCollisionRobotUnpadded().get())));
-
-    std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
+    std::vector<boost::shared_ptr<fcl::CollisionObject> > fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
 
     fcl::DistanceResult result_temp;
     float min_dist = std::numeric_limits<float>::infinity();
@@ -478,6 +531,10 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacle
         {
             min_dist = result_temp.min_distance;
             result = result_temp;
+
+            ROS_WARN_STREAM("min_dist = " << min_dist);
+            ROS_WARN_STREAM("safety_links_name_cc_ = " << safety_links_name_cc_[link_index][0]);
+
         }
     }
 
@@ -485,277 +542,232 @@ double planning_scene_monitor::PlanningSceneMonitor::computeLinkExactMinObstacle
 }
 
 
-double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index) const
+double planning_scene_monitor::PlanningSceneMonitor::computeLinkApproxMinObstacleDist(const robot_state::RobotState *kstate, int link_index, fcl::DistanceResult& result) const
 {
 	std::vector<std::vector< std::string > > safety_links_name_cc_;
 	safety_links_name_cc_.resize(3);
 
-	safety_links_name_cc_[0].push_back("right_upper_shoulder");
-	safety_links_name_cc_[0].push_back("right_lower_shoulder");
-	safety_links_name_cc_[0].push_back("right_upper_elbow");
-	safety_links_name_cc_[0].push_back("right_upper_elbow_visual");
-	safety_links_name_cc_[0].push_back("right_lower_elbow");
+    safety_links_name_cc_[0].push_back("right_upper_shoulder");
+    safety_links_name_cc_[0].push_back("right_lower_shoulder");
+    safety_links_name_cc_[0].push_back("right_upper_elbow");
+    safety_links_name_cc_[0].push_back("right_upper_elbow_visual");
+    safety_links_name_cc_[0].push_back("right_lower_elbow");
 
-	safety_links_name_cc_[1].push_back("right_upper_forearm");
-	safety_links_name_cc_[1].push_back("right_upper_forearm_visual");
-	safety_links_name_cc_[1].push_back("right_lower_forearm");
+    safety_links_name_cc_[1].push_back("right_upper_forearm");
+    safety_links_name_cc_[1].push_back("right_upper_forearm_visual");
+    safety_links_name_cc_[1].push_back("right_lower_forearm");
 
-	safety_links_name_cc_[2].push_back("right_wrist");
-	safety_links_name_cc_[2].push_back("right_hand");
-	safety_links_name_cc_[2].push_back("right_gripper_base");
-	safety_links_name_cc_[2].push_back("right_gripper");
-	safety_links_name_cc_[2].push_back("right_hand_accelerometer");
-	safety_links_name_cc_[2].push_back("right_hand_camera");
-	safety_links_name_cc_[2].push_back("right_hand_range");
+    safety_links_name_cc_[2].push_back("right_wrist");
+    safety_links_name_cc_[2].push_back("right_hand");
+    safety_links_name_cc_[2].push_back("right_gripper_base");
+    safety_links_name_cc_[2].push_back("right_gripper");
+    safety_links_name_cc_[2].push_back("r_gripper_l_finger");
+    safety_links_name_cc_[2].push_back("r_gripper_l_finger_tip");
+    safety_links_name_cc_[2].push_back("r_gripper_r_finger");
+    safety_links_name_cc_[2].push_back("r_gripper_r_finger_tip");
+    safety_links_name_cc_[2].push_back("right_hand_accelerometer");
+    safety_links_name_cc_[2].push_back("right_hand_camera");
+    safety_links_name_cc_[2].push_back("right_hand_range");
 
+    const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_ = static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());
+    std::vector<boost::shared_ptr<fcl::CollisionObject> > fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
 
-	const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_ = static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());
-	std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
+    float min_dist = std::numeric_limits<float>::infinity();
+    double temp_dist;
+    double sample_length;
+    int nb_sample;
 
-	float min_dist = std::numeric_limits<float>::infinity();
-	double temp_dist;
-	double sample_length;
-	int nb_sample;
+    visualization_msgs::MarkerArray	marker;
+    std_msgs::ColorRGBA color;
 
-	visualization_msgs::MarkerArray	marker;
-	std_msgs::ColorRGBA color;
-
-	for (size_t h = 0; h < fcl_collision_obj_.size(); ++h)
-	{
-		Eigen::Vector3d box_position(fcl_collision_obj_[h]->getTranslation().data.vs);
-		fcl::Quaternion3f box_rotation = fcl_collision_obj_[h]->getQuatRotation();
-		double rot[4] = {box_rotation.getX(), box_rotation.getY(), box_rotation.getZ(), box_rotation.getW()};
-
-		fcl::Vec3f max_in_box_frame = fcl_collision_obj_[h]->collisionGeometry()->aabb_local.max_;
-		fcl::Vec3f min_in_box_frame = fcl_collision_obj_[h]->collisionGeometry()->aabb_local.min_;
-
-		//VISUALIZE : Bounding boxes
-		double box_size[3] = {max_in_box_frame[0]-min_in_box_frame[0], max_in_box_frame[1]-min_in_box_frame[1], max_in_box_frame[2]-min_in_box_frame[2]};
-		color.a = 0.2; color.r = 1; color.g = 0; color.b = 0;
-		marker.markers.push_back(createBox(h, box_position.data(), rot, box_size, color));
-
-		for(size_t i = 0; i < safety_links_name_cc_[link_index].size(); ++i)
-		{
-			for(size_t i2 = 0; i2 < kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getShapes().size(); ++i2)
-			{
-
-				shapes::ShapeConstPtr link_shape = kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getShapes()[i2];
-				const EigenSTL::vector_Affine3d link_offset_STL = kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getCollisionOriginTransforms();
-
-				Eigen::Vector3d link_offset = link_offset_STL[i2].translation().transpose() * link_offset_STL[i2].rotation();
-				Eigen::Vector3d link_position = kstate->getGlobalLinkTransform(safety_links_name_cc_[link_index][i]).translation();
-				Eigen::Matrix3d link_rotation = kstate->getGlobalLinkTransform(safety_links_name_cc_[link_index][i]).rotation() * link_offset_STL[i2].rotation();
-
-				if (link_shape->type == shapes::CYLINDER)
-				{
-					const shapes::Cylinder* cylinder = static_cast<const shapes::Cylinder*>(link_shape.get());
-
-					sample_length = 2*cylinder->radius;
-					nb_sample = std::ceil((cylinder->length) / sample_length);
-					double adjusted_sample_length = (cylinder->length)/(nb_sample);
-					Eigen::Vector3d cylinder_offset, sample_step;
-					cylinder_offset << 0, 0, cylinder->length / 2;
-					sample_step << 0, 0, adjusted_sample_length;
-
-					double sample_radius = std::sqrt(std::pow(cylinder->radius,2) + std::pow(adjusted_sample_length/2,2));
-
-					//STa temp
-					//				ROS_WARN_STREAM("cylinder sample_radius = " << sample_radius << "; cylinder->radius = " << cylinder->radius);
+    Eigen::Vector3d sample_offset;
+    std::vector<Eigen::Vector3d> sample_position;
+    std::vector<double> sample_radius;
+    size_t samples_count = 0;
 
 
-					for (size_t j = 0; j < nb_sample; ++j)
-					{
+    for(size_t i = 0; i < safety_links_name_cc_[link_index].size(); ++i)
+    {
+    	for(size_t i2 = 0; i2 < kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getShapes().size(); ++i2)
+    	{
 
-						Eigen::Vector3d sample_offset = -cylinder_offset + link_offset + j * sample_step + (sample_step/2);
-						Eigen::Vector3d sample_position = link_position + link_rotation * sample_offset;
+    		shapes::ShapeConstPtr link_shape = kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getShapes()[i2];
+    		const EigenSTL::vector_Affine3d link_offset_STL = kstate->getLinkModel(safety_links_name_cc_[link_index][i])->getCollisionOriginTransforms();
 
-						//VISUALIZE : sample position
-						color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
-						marker.markers.push_back(createSphere(link_index*1000 + i* 100 + i2*10 +j  , float(sample_position[0]), float(sample_position[1]), float(sample_position[2]), sample_radius, color));
+    		Eigen::Vector3d link_offset = link_offset_STL[i2].translation().transpose() * link_offset_STL[i2].rotation();
+    		Eigen::Vector3d link_position = kstate->getGlobalLinkTransform(safety_links_name_cc_[link_index][i]).translation();
+    		Eigen::Matrix3d link_rotation = kstate->getGlobalLinkTransform(safety_links_name_cc_[link_index][i]).rotation() * link_offset_STL[i2].rotation();
 
+    		if (link_shape->type == shapes::CYLINDER)
+    		{
+    			const shapes::Cylinder* cylinder = static_cast<const shapes::Cylinder*>(link_shape.get());
 
-						//If obstacle is too far, we can iterate.
-						double max_param = std::max(fcl_collision_obj_[h]->getAABB().depth(), std::max(fcl_collision_obj_[h]->getAABB().height(), fcl_collision_obj_[h]->getAABB().width()));
-						if((box_position - sample_position).norm() - max_param < min_dist)
-						{
-							fcl::Transform3f Id;
-							Id.setIdentity();
-							fcl::Transform3f inverse_transform = fcl_collision_obj_[h]->getTransform().inverseTimes(Id);
+    			sample_length = 2*cylinder->radius;
+    			nb_sample = std::ceil((cylinder->length) / sample_length);
+    			double adjusted_sample_length = (cylinder->length)/(nb_sample);
+    			Eigen::Vector3d cylinder_offset, sample_step;
+    			cylinder_offset << 0, 0, cylinder->length / 2;
+    			sample_step << 0, 0, adjusted_sample_length;
 
-							fcl::Vec3f sample_position_fcl(sample_position[0], sample_position[1], sample_position[2]);
-							fcl::Vec3f sample_position_in_box_frame = inverse_transform.transform(sample_position_fcl);
+    			for (size_t j = 0; j < nb_sample; ++j)
+    			{
+        			sample_radius.push_back(std::sqrt(std::pow(cylinder->radius,2) + std::pow(adjusted_sample_length/2,2)));
+    				sample_offset = -cylinder_offset + link_offset + j * sample_step + (sample_step/2);
+    				sample_position.push_back(Eigen::Vector3d(link_position + link_rotation * sample_offset));
 
-							fcl::Vec3f box_nearest_point_in_box_frame;
+    				//VISUALIZE : sample position
+    				if (publish_motion_planning_markers_)
+    				{
+    					color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
+    					marker.markers.push_back(createSphere("sample_sphere_link_" +  boost::lexical_cast<std::string>(link_index),samples_count, float(sample_position[samples_count][0]), float(sample_position[samples_count][1]), float(sample_position[samples_count][2]), sample_radius[samples_count], color));
+    				}
+    				samples_count++;
+    			}
+    		}
+    		else if (link_shape->type == shapes::BOX)
+    		{
+    			const shapes::Box* box = static_cast<const shapes::Box*>(link_shape.get());
 
-							for(size_t k=0; k < 3; ++k)
-							{
-								if (sample_position_in_box_frame[k] < min_in_box_frame[k])
-									box_nearest_point_in_box_frame[k] = min_in_box_frame[k];
-								else if (sample_position_in_box_frame[k] > max_in_box_frame[k])
-									box_nearest_point_in_box_frame[k] = max_in_box_frame[k];
-								else
-									box_nearest_point_in_box_frame[k] = sample_position_in_box_frame[k];
-							}
+    			std::vector<std::pair<size_t, double> > box_size;
+    			box_size.push_back(std::pair<size_t, double> (0, box->size[0]));
+    			box_size.push_back(std::pair<size_t, double> (1, box->size[1]));
+    			box_size.push_back(std::pair<size_t, double> (2, box->size[2]));
+    			std::sort(box_size.begin(), box_size.end(),
+    					boost::bind(&std::pair<size_t, double>::second, _1) >
+    			boost::bind(&std::pair<size_t, double>::second, _2));
 
-							fcl::Vec3f box_nearest_point_fcl = fcl_collision_obj_[h]->getTransform().transform(box_nearest_point_in_box_frame);
-							Eigen::Vector3d box_nearest_point(box_nearest_point_fcl.data.vs);
+    			sample_length = 2*box_size[1].second;
+    			nb_sample = std::ceil(box_size[0].second / sample_length);
+    			double adjusted_sample_length = (box_size[0].second)/(nb_sample);
+    			Eigen::Vector3d box_offset, sample_step;
+    			box_offset << ((box_size[0].first == 0) ? box_size[0].second/2 : 0), ((box_size[0].first == 1) ? box_size[0].second/2 : 0), ((box_size[0].first == 2) ? box_size[0].second/2 : 0);
+    			sample_step << ((box_size[0].first == 0) ? adjusted_sample_length : 0), ((box_size[0].first == 1) ? adjusted_sample_length : 0), ((box_size[0].first == 2) ? adjusted_sample_length : 0);
 
-//							//VISUALIZE : min point of objects
-//							color.a = 1; color.r = 0; color.g = 1; color.b = 0;
-//							marker.markers.push_back(createSphere(j+100000, float(box_nearest_point[0]), float(box_nearest_point[1]), float(box_nearest_point[2]), 0.05, color));
+    			double radius;
+    			if (box->size[0] == box_size[0].second)
+    				radius = (std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[1],2)  + std::pow(box->size[2],2)));
+    			else if (box->size[1] == box_size[0].second)
+    				radius = (std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[0],2)  + std::pow(box->size[2],2)));
+    			else
+    				radius = (std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[0],2)  + std::pow(box->size[1],2)));
 
-							temp_dist = (box_nearest_point - sample_position).norm();
+    			for (size_t j = 0; j < nb_sample; ++j)
+    			{
+    				sample_radius.push_back(radius);
+    				sample_offset = -box_offset + link_offset + j * sample_step + (sample_step/2);
+    				sample_position.push_back(Eigen::Vector3d(link_position + link_rotation * sample_offset));
 
-							temp_dist -= sample_radius;
+    				//VISUALIZE : sample position
+    				if (publish_motion_planning_markers_)
+    				{
+    				color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
+    				marker.markers.push_back(createSphere("sample_sphere_link_" +  boost::lexical_cast<std::string>(link_index),samples_count, float(sample_position[samples_count][0]), float(sample_position[samples_count][1]), float(sample_position[samples_count][2]), sample_radius[samples_count], color));
+    				}
+    				samples_count++;
+    			}
+    		}
+    	}
+    }
 
-							if (temp_dist < min_dist)
-							{
-								min_dist = temp_dist;
-							}
+    for (size_t h = 0; h < fcl_collision_obj_.size(); ++h)
+    {
+    	Eigen::Vector3d box_position(fcl_collision_obj_[h]->getTranslation().data.vs);
+    	fcl::Quaternion3f box_rotation = fcl_collision_obj_[h]->getQuatRotation();
+    	double rot[4] = {box_rotation.getX(), box_rotation.getY(), box_rotation.getZ(), box_rotation.getW()};
 
-							if (min_dist <= 0)
-							{
-								//				ROS_WARN_STREAM("Exit computeLinkMinObstacleDist");
-								danger_eval_marker_publisher_.publish(marker);
-								ros::Duration(0.1).sleep();
-								return  0;
-							}
-						}
-					}
-				}
-				else if (link_shape->type == shapes::BOX)
-				{
-					//TODO : sample_step always equals 0
+    	fcl::Vec3f max_in_box_frame = fcl_collision_obj_[h]->collisionGeometry()->aabb_local.max_;
+    	fcl::Vec3f min_in_box_frame = fcl_collision_obj_[h]->collisionGeometry()->aabb_local.min_;
 
-					const shapes::Box* box = static_cast<const shapes::Box*>(link_shape.get());
+    	//VISUALIZE : Bounding boxes
+    	if (publish_motion_planning_markers_)
+    	{
+    		double box_size[3] = {max_in_box_frame[0]-min_in_box_frame[0], max_in_box_frame[1]-min_in_box_frame[1], max_in_box_frame[2]-min_in_box_frame[2]};
+    		color.a = 0.2; color.r = 1; color.g = 0; color.b = 0;
+    		marker.markers.push_back(createBox("co_bounding_box",h, box_position.data(), rot, box_size, color));
+    	}
 
-					std::vector<std::pair<size_t, double> > box_size;
-					box_size.push_back(std::pair<size_t, double> (0, box->size[0]));
-					box_size.push_back(std::pair<size_t, double> (1, box->size[1]));
-					box_size.push_back(std::pair<size_t, double> (2, box->size[2]));
-					std::sort(box_size.begin(), box_size.end(),
-							boost::bind(&std::pair<size_t, double>::second, _1) >
-					boost::bind(&std::pair<size_t, double>::second, _2));
+    	for (size_t i = 0; i < sample_position.size(); ++i)
+    	{
+    		//If obstacle is too far, we can iterate.
+    		double max_param = std::max(fcl_collision_obj_[h]->getAABB().depth(), std::max(fcl_collision_obj_[h]->getAABB().height(), fcl_collision_obj_[h]->getAABB().width()));
+    		if((box_position - sample_position[i]).norm() - max_param < min_dist)
+    		{
+    			fcl::Transform3f Id;
+    			Id.setIdentity();
+    			fcl::Transform3f inverse_transform = fcl_collision_obj_[h]->getTransform().inverseTimes(Id);
 
-					sample_length = 2*box_size[1].second;
-					nb_sample = std::ceil(box_size[0].second / sample_length);
-					double adjusted_sample_length = (box_size[0].second)/(nb_sample);
-					Eigen::Vector3d box_offset, sample_step;
-					box_offset << ((box_size[0].first == 0) ? box_size[0].second/2 : 0), ((box_size[0].first == 1) ? box_size[0].second/2 : 0), ((box_size[0].first == 2) ? box_size[0].second/2 : 0);
-					sample_step << ((box_size[0].first == 0) ? adjusted_sample_length : 0), ((box_size[0].first == 1) ? adjusted_sample_length : 0), ((box_size[0].first == 2) ? adjusted_sample_length : 0);
+    			fcl::Vec3f sample_position_fcl(sample_position[i][0], sample_position[i][1], sample_position[i][2]);
+    			fcl::Vec3f sample_position_in_box_frame = inverse_transform.transform(sample_position_fcl);
 
-					double sample_radius;
-					if (box->size[0] == box_size[0].second)
-						sample_radius = std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[1],2)  + std::pow(box->size[2],2));
-					else if (box->size[1] == box_size[0].second)
-						sample_radius = std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[0],2)  + std::pow(box->size[2],2));
-					else
-						sample_radius = std::sqrt(std::pow(adjusted_sample_length/2,2) + std::pow(box->size[0],2)  + std::pow(box->size[1],2));
+    			fcl::Vec3f box_nearest_point_in_box_frame;
 
-//					//STa temp
-//					ROS_WARN_STREAM("box sample_radius = " << sample_radius << "; box max_size = " << box_size[0].second);
-//					ROS_WARN_STREAM("box nb samples = " << nb_sample << "; adjusted_sample_length = " << adjusted_sample_length);
+    			for(size_t k=0; k < 3; ++k)
+    			{
+    				if (sample_position_in_box_frame[k] < min_in_box_frame[k])
+    					box_nearest_point_in_box_frame[k] = min_in_box_frame[k];
+    				else if (sample_position_in_box_frame[k] > max_in_box_frame[k])
+    					box_nearest_point_in_box_frame[k] = max_in_box_frame[k];
+    				else
+    					box_nearest_point_in_box_frame[k] = sample_position_in_box_frame[k];
+    			}
 
-					for (size_t j = 0; j < nb_sample; ++j)
-					{
+    			fcl::Vec3f box_nearest_point_fcl = fcl_collision_obj_[h]->getTransform().transform(box_nearest_point_in_box_frame);
+    			Eigen::Vector3d box_nearest_point(box_nearest_point_fcl.data.vs);
 
-						Eigen::Vector3d sample_offset = -box_offset + link_offset + j * sample_step + (sample_step/2);
-						Eigen::Vector3d sample_position = link_position + link_rotation * sample_offset;
+    			temp_dist = (box_nearest_point - sample_position[i]).norm();
 
-						//VISUALIZE : sample position
-						color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
-						marker.markers.push_back(createSphere(link_index*1000 + i* 100 + i2*10 +j , float(sample_position[0]), float(sample_position[1]), float(sample_position[2]), sample_radius, color));
+    			temp_dist -= sample_radius[i];
 
+    			if (temp_dist < min_dist)
+    			{
+    				min_dist = temp_dist;
+    				result.min_distance = min_dist;
+    				result.nearest_points[0][0] = sample_position[i][0];
+    				result.nearest_points[0][1] = sample_position[i][1];
+    				result.nearest_points[0][2] = sample_position[i][2];
 
-						//If obstacle is too far, we can iterate.
-						double max_center_dist = std::sqrt(std::pow(fcl_collision_obj_[h]->getAABB().depth(), 2) + std::pow(fcl_collision_obj_[h]->getAABB().height(), 2)+ std::pow(fcl_collision_obj_[h]->getAABB().width(),2));
-						if((box_position - sample_position).norm() - max_center_dist < min_dist)
-						{
-							fcl::Transform3f Id;
-							Id.setIdentity();
-							fcl::Transform3f inverse_transform = fcl_collision_obj_[h]->getTransform().inverseTimes(Id);
+    				result.nearest_points[1][0] = box_nearest_point[0];
+    				result.nearest_points[1][1] = box_nearest_point[1];
+    				result.nearest_points[1][2] = box_nearest_point[2];
 
-							fcl::Vec3f sample_position_fcl(sample_position[0], sample_position[1], sample_position[2]);
-							fcl::Vec3f sample_position_in_box_frame = inverse_transform.transform(sample_position_fcl);
+    			}
 
-							fcl::Vec3f box_nearest_point_in_box_frame;
+    			if (min_dist <= 0)
+    			{
+    				danger_eval_marker_publisher_.publish(marker);
+    				ros::Duration(0.1).sleep();
+    				return  0;
+    			}
+    		}
+    	}
+    }
+    //VISUALIZE : min point of objects, can be compared with exact dist
+//    color.a = 1; color.r = 0; color.g = 1; color.b = 0;
+//    marker.markers.push_back(createSphere("min_dist_sphere", 0, float(nearest_point[0]), float(nearest_point[1]), float(nearest_point[2]), 0.05, color));
 
-							for(size_t k=0; k < 3; ++k)
-							{
-								if (sample_position_in_box_frame[k] < min_in_box_frame[k])
-									box_nearest_point_in_box_frame[k] = min_in_box_frame[k];
-								else if (sample_position_in_box_frame[k] > max_in_box_frame[k])
-									box_nearest_point_in_box_frame[k] = max_in_box_frame[k];
-								else
-									box_nearest_point_in_box_frame[k] = sample_position_in_box_frame[k];
-							}
-
-							fcl::Vec3f box_nearest_point_fcl = fcl_collision_obj_[h]->getTransform().transform(box_nearest_point_in_box_frame);
-							Eigen::Vector3d box_nearest_point(box_nearest_point_fcl.data.vs);
-							temp_dist = (box_nearest_point - sample_position).norm();
-
-							temp_dist -= sample_radius;
-
-							if (temp_dist < min_dist)//         output_file_
-							    //          << ros::WallTime::now() <<  "     "
-							    //          << scene_->getCurrentState().getVariablePosition("right_s0") <<  " "
-							    //          << scene_->getCurrentState().getVariablePosition("right_s1") <<  " "
-							    //          << scene_->getCurrentState().getVariablePosition("right_e0") <<  " "
-							    //          << scene_->getCurrentState().getVariablePosition("right_e1") <<  " "
-							    //          << scene_->getCurrentState().getVariablePosition("right_w0") <<  " "
-							    //          << scene_->getCurrentState().getVariablePosition("right_w1") <<  " "
-							    //          << scene_->getCurrentState().getVariablePosition("right_w2") <<  "      "
-							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(0) <<  " "
-							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(1) <<  " "
-							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").translation()(2) <<  " "
-							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(0) <<  " "
-							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(1) <<  " "
-							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(2) <<  " "
-							    //          << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(3) <<  "\n";
-							{
-								min_dist = temp_dist;
-							}
-
-							if (min_dist <= 0)
-							{
-								//				ROS_WARN_STREAM("Exit computeLinkMinObstacleDist");
-								danger_eval_marker_publisher_.publish(marker);
-								ros::Duration(0.1).sleep();
-								return  0;
-							}
-						}
-					}
-				}
-				//TODO: If shape == sphere
-			}
-		}
-	}
-
-	danger_eval_marker_publisher_.publish(marker);
-	ros::Duration(0.01).sleep();
-	//	ROS_WARN_STREAM("Exit computeLinkMinObstacleDist");
-	return min_dist;
+	if (publish_motion_planning_markers_)
+		danger_eval_marker_publisher_.publish(marker);
+    ros::Duration(0.01).sleep();
+    return min_dist;
 }
 
 
 
-double planning_scene_monitor::PlanningSceneMonitor::computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate) const
+double planning_scene_monitor::PlanningSceneMonitor::computeRobotApproxMinObstacleDist(const robot_state::RobotState *kstate, fcl::DistanceResult& result) const
 {
 	size_t NB_SAFETY_LINKS = 3;
 
 	float min_dist = std::numeric_limits<float>::infinity();
 	float temp_dist, exact_dist;
+	fcl::DistanceResult temp_result;
 	for (size_t i = 0; i < NB_SAFETY_LINKS; ++i)
 	{
-		temp_dist = computeLinkApproxMinObstacleDist(kstate, i);
-		//		exact_dist = computeLinkExactMinObstacleDist(kstate, i);
-		//		ROS_INFO_STREAM("Approx = " << temp_dist <<"; Exact = " << exact_dist);
-
-		//		if (exact_dist < temp_dist)
-		//			ROS_WARN_STREAM("exact_dist < approx_dist for link " << i);
-
+		temp_dist = computeLinkApproxMinObstacleDist(kstate, i, temp_result);
 		if (temp_dist < min_dist)
+		{
 			min_dist = temp_dist;
+			result = temp_result;
+		}
 		if (min_dist <= 0)
 		{
 			return  0;
@@ -768,7 +780,7 @@ double planning_scene_monitor::PlanningSceneMonitor::computeRobotApproxMinObstac
 double planning_scene_monitor::PlanningSceneMonitor::humanAwareness(const robot_state::RobotState *kstate) const
 {
 	const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl = static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());
-	std::vector<fcl::CollisionObject*> fcl_collision_obj_ = safe_collision_world_fcl->getCollisionObjects();
+	std::vector<boost::shared_ptr<fcl::CollisionObject> > fcl_collision_obj_ = safe_collision_world_fcl->getCollisionObjects();
 	std::vector<std::string> co_names = safe_collision_world_fcl->getCollisionObjectNames();
 
 	std::vector<Eigen::Affine3d> human_eye_gaze_;
@@ -790,14 +802,7 @@ double planning_scene_monitor::PlanningSceneMonitor::humanAwareness(const robot_
 		}
 	}
 
-
-//	std::vector<Eigen::Affine3d> human_eye_gaze_;
-//	moveit::core::FixedTransformsMap transform = scene_->getTransforms().getAllTransforms();
-//	for (moveit::core::FixedTransformsMap::iterator it = transform.begin(); it != transform.end(); ++it)
-//	{
-//		if (it->first.find("human_eye_gaze") != std::string::npos)
-//			human_eye_gaze_.push_back(it->second);
-//	}
+	danger_eval_marker_publisher_.publish(createAwarenessMarkerArrow(human_eye_gaze_, 1/publish_planning_scene_frequency_));
 
 	Eigen::Affine3d end_effector_transform;
 
@@ -817,23 +822,28 @@ double planning_scene_monitor::PlanningSceneMonitor::humanAwareness(const robot_
 
 			if (value > worst_value)
 				worst_value = value;
-
-			ROS_WARN_STREAM("hum_to_eef = " << hum_to_eef);
-			ROS_WARN_STREAM("hum_direction = " << hum_direction);
-			ROS_WARN_STREAM("ang_dist = " << value);
-			std::cout << "\n";
-
 		}
 	}
 
 	return worst_value;
 }
 
+//STa: Store data -> robot config + dist to obstacle
 void planning_scene_monitor::PlanningSceneMonitor::outputData(double min_dist_obstacle) const
 {
         std::string homepath = getenv("HOME");
         std::ofstream output_file;
-        output_file.open((homepath + "/data_psm.txt").c_str(), std::ios::out | std::ios::app);
+        output_file.open((homepath + "/trajectory_data.txt").c_str(), std::ios::out | std::ios::app);
+
+		if (start_trajectory_data_file_)
+		{
+			start_trajectory_data_file_ = false;
+			output_file.open((homepath + "/trajectory_data.txt").c_str(), std::ios::out | std::ios::trunc);
+			output_file << "Time | right_s0 | right_s1 | right_e0 | right_e1 | right_w0 | right_w1 | right_w2 | eef_pos_x | eef_pos_y | eef_pos_z | eef_rot_x | eef_rot_y | eef_rot_z | eef_rot_w | min_dist_obstacle \n \n";
+		}
+		else
+	        output_file.open((homepath + "/trajectory_data.txt").c_str(), std::ios::out | std::ios::app);
+
 
         output_file
         << ros::WallTime::now() <<  " "
@@ -853,18 +863,16 @@ void planning_scene_monitor::PlanningSceneMonitor::outputData(double min_dist_ob
         << scene_->getCurrentState().getGlobalLinkTransform("right_gripper").rotation()(3) <<  " "
         << min_dist_obstacle << "\n";
 
-
+        output_file.close();
 }
 
+//STa: Display shortest distance on the scene + distance value
 void planning_scene_monitor::PlanningSceneMonitor::publishMinDistMarkers(fcl::DistanceResult result)const
 {
     visualization_msgs::MarkerArray marker;
     std_msgs::ColorRGBA color;
 
     color.a = 1; color.r = 0.5; color.g = 0.5; color.b = 0.5;
-
-    marker.markers.push_back(createSphere(1000000, float(result.nearest_points[0].data[0]), float(result.nearest_points[0].data[1]), float(result.nearest_points[0].data[2]), 0.01, color));
-    marker.markers.push_back(createSphere(1000001, float(result.nearest_points[1].data[0]), float(result.nearest_points[1].data[1]), float(result.nearest_points[1].data[2]), 0.01, color));
 
     fcl::Vec3f v3f = result.nearest_points[1]-result.nearest_points[0];
     Eigen::Vector3f vec;
@@ -874,19 +882,84 @@ void planning_scene_monitor::PlanningSceneMonitor::publishMinDistMarkers(fcl::Di
     fcl::Vec3f position =  (result.nearest_points[1]+result.nearest_points[0])/2;
     double size[3] = {0.01, 0.01, vec.norm()};
 
-//    ROS_WARN_STREAM("pt0 = " << result.nearest_points[0]);
-//    ROS_WARN_STREAM("pt1 = " << result.nearest_points[1]);
-//    ROS_WARN_STREAM("vec norm = " << vec.norm() << "\n");
-
-
-    marker.markers.push_back(createBox(1000002, position.data.vs, quatd, size, color));
+    marker.markers.push_back(createSphere("exact_min_dist_sphere", 0, float(result.nearest_points[0].data[0]), float(result.nearest_points[0].data[1]), float(result.nearest_points[0].data[2]), 0.01, color));
+    marker.markers.push_back(createSphere("exact_min_dist_sphere", 1, float(result.nearest_points[1].data[0]), float(result.nearest_points[1].data[1]), float(result.nearest_points[1].data[2]), 0.01, color));
+    marker.markers.push_back(createBox("exact_min_dist_box", 0, position.data.vs, quatd, size, color));
 
     std::stringstream ss;
+
+    //Display the clearance value above the robot's head
     ss << "Clearance = " << result.min_distance;
     marker.markers.push_back(createText(1, 0, 0, 1, 0.1, ss.str(), color));
 
+//    //Display the clearance value above the segment
+//    ss << "d = " << result.min_distance;
+//    v3f = (result.nearest_points[1]+result.nearest_points[0])/2;
+//    marker.markers.push_back(createText(1, v3f.data[0], v3f.data[1], v3f.data[2]+0.5, 0.1, ss.str(), color));
+
     danger_eval_marker_publisher_.publish(marker);
     ros::Duration(0.01).sleep();
+
+}
+
+double planning_scene_monitor::PlanningSceneMonitor::generateBoxesMarkersFromOctomapRecurse(visualization_msgs::MarkerArray& box_marker, const fcl::OcTree* tree, const fcl::OcTree::OcTreeNode* node, const fcl::AABB& node_bv, double precision, bool& is_occupied_inside_ws)
+{
+	//Keep only dangerous boxes
+	bool inside_ws = std::min(node_bv.min_[2],node_bv.max_[2]) < 1.5 && std::max(node_bv.min_[2],node_bv.max_[2]) > -0.5 && std::min(node_bv.min_[1],node_bv.max_[1]) < 0.5 && std::max(node_bv.min_[1],node_bv.max_[1]) > -1.5 && std::min(node_bv.min_[0],node_bv.max_[0]) < 1.5 && std::max(node_bv.min_[0],node_bv.max_[0]) > -1.5;
+
+	double rate;
+	std::vector<visualization_msgs::MarkerArray> box_marker_child_vec;
+	if(node->hasChildren())
+	{
+		is_occupied_inside_ws = false;
+		rate=0;
+		double nb_child=0;
+		for(unsigned int i = 0; i < 8; ++i)
+		{
+			if(node->childExists(i))
+			{
+				visualization_msgs::MarkerArray box_marker_child;
+				fcl::AABB child_bv;
+				fcl::computeChildBV(node_bv, i, child_bv);
+				bool is_child_occupied_inside_ws;
+				rate += generateBoxesMarkersFromOctomapRecurse(box_marker_child, tree, node->getChild(i), child_bv, precision, is_child_occupied_inside_ws);
+				box_marker_child_vec.push_back(box_marker_child);
+				if (is_child_occupied_inside_ws)
+					is_occupied_inside_ws = true;
+			}
+		}
+		rate /= 8;
+	}
+	else
+	{
+		rate = node->getOccupancy();
+		is_occupied_inside_ws = inside_ws && tree->isNodeOccupied(node);
+	}
+
+	if (is_occupied_inside_ws)
+	{
+		if (rate >= precision)
+		{
+			box_marker.markers.clear();
+
+			fcl::Box box;
+			fcl::Transform3f box_tf;
+			constructBox(node_bv, fcl::Transform3f(fcl::Vec3f(0, 0, 0)), box, box_tf);
+
+			std_msgs::ColorRGBA color;
+			color.a = 0.4; color.r = 1; color.g = 0; color.b = 0;
+			double quat[4] = {box_tf.getQuatRotation().getX(), box_tf.getQuatRotation().getY(), box_tf.getQuatRotation().getZ(), box_tf.getQuatRotation().getW()};
+			box_marker.markers.push_back(createBox("box_octomap", ++box_octomap_index_, box_tf.getTranslation().data.vs, quat, box.side.data.vs, color));
+		}
+		else
+		{
+			for(size_t i=0; i < box_marker_child_vec.size(); ++i)
+				for(size_t j=0; j < box_marker_child_vec[i].markers.size(); ++j)
+					box_marker.markers.push_back(box_marker_child_vec[i].markers[j]);
+		}
+	}
+
+	return rate;
 
 }
 
@@ -905,14 +978,18 @@ void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 	planning_scene_publisher_.publish(msg);
 	ROS_DEBUG("Published the full planning scene: '%s'", msg.name.c_str());
 
-	//STa temp
-//	publish_planning_scene_frequency_ = 100;
+	//STa
+	ros::Time t_start_pub = ros::Time::now();
 
 	do
 	{
 		bool publish_msg = false;
 		bool is_full = false;
 		ros::Rate rate(publish_planning_scene_frequency_);
+
+		//STa : Use a fixed rate that only sleeps during the remaining time
+		rate.reset();
+
 		{
 			boost::unique_lock<boost::shared_mutex> ulock(scene_update_mutex_);
 			while (new_scene_update_ == UPDATE_NONE && publish_planning_scene_)
@@ -954,38 +1031,49 @@ void planning_scene_monitor::PlanningSceneMonitor::scenePublishingThread()
 			}
 		}
 
-//		//STa
-//		if (! scene_->getCollisionWorld()->getWorld()->getObjectIds().empty())
-//		{
-//			double temp_dist, min_dist = std::numeric_limits<double>::infinity();
-//			fcl::DistanceResult distance_result, distance_result_temp;
-//			for (size_t i=0; i<3; ++i)
-//			{
-//				temp_dist = computeLinkExactMinObstacleDist(&scene_->getCurrentState(),i, distance_result_temp);
-//
-//				if (temp_dist < min_dist)
-//				{
-//					min_dist = temp_dist;
-//					distance_result = distance_result_temp;
-//				}
-//			}
-//
-//			outputData(min_dist);
-//			publishMinDistMarkers(distance_result);
-//
-//////			ROS_INFO_STREAM("exact distance = " << min_dist);
-////
-////			double dist_simple = computeRobotApproxMinObstacleDist(&scene_->getCurrentState());
-////
-//////			if (dist_simple>min_dist)
-////			    ROS_WARN_STREAM("approx = " << dist_simple << "; exact = " << min_dist);
-////
-//////			humanAwareness(&scene_->getCurrentState());
-//		}
+		//STa
+		if (!scene_->getCollisionWorld()->getWorld()->getObjectIds().empty() && (ros::Time::now()-t_start_pub).toSec() >5)
+		{
+			fcl::DistanceResult distance_result;
+			double min_dist;
+			if (publish_motion_planning_markers_ || publish_trajectory_data_file_)
+				 min_dist = computeRobotApproxMinObstacleDist(&scene_->getCurrentState(), distance_result);
+			if (publish_motion_planning_markers_)
+			{
+				//Generate boxes from octomap
+				const collision_detection::SafeCollisionWorldFCL* safe_collision_world_fcl_ = static_cast<const collision_detection::SafeCollisionWorldFCL*> (scene_->getCollisionWorld().get());
+				std::vector<boost::shared_ptr<fcl::CollisionObject> > fcl_collision_obj_ = safe_collision_world_fcl_->getCollisionObjects();
+				for (size_t i=0; i < fcl_collision_obj_.size(); ++i)
+				{
+					if(fcl_collision_obj_[i]->getObjectType() == 3)
+					{
+						const fcl::OcTree* tree = static_cast<const fcl::OcTree*>(fcl_collision_obj_[i]->collisionGeometry().get());
+						visualization_msgs::MarkerArray box_marker;
+						bool null;
+						box_octomap_index_ = 0;
+						generateBoxesMarkersFromOctomapRecurse(box_marker, tree, tree->getRoot(), tree->getRootBV(), 0.15, null);
+
+						ROS_WARN_STREAM("Boxes generated from octomap = " << box_marker.markers.size());
+
+						danger_eval_marker_publisher_.publish(box_marker);
+						ros::Duration(0.01).sleep();
+					}
+				}
+
+				std_msgs::ColorRGBA color;
+				color.a = 1; color.r = 1; color.g = 0; color.b = 0;
+				publishMinDistMarkers(distance_result);
+
+				humanAwareness(&scene_->getCurrentState());
+			}
+			if (publish_trajectory_data_file_)
+				outputData(min_dist);
+		}
 
 		if (publish_msg)
 		{
-			rate.reset();
+			//STa test
+//			rate.reset();
 			planning_scene_publisher_.publish(msg);
 			if (is_full)
 				ROS_DEBUG("Published full planning scene: '%s'", msg.name.c_str());
@@ -1047,41 +1135,41 @@ void planning_scene_monitor::PlanningSceneMonitor::triggerSceneUpdateEvent(Scene
 
 bool planning_scene_monitor::PlanningSceneMonitor::requestPlanningSceneState(const std::string& service_name)
 {
-	// use global namespace for service
-	ros::ServiceClient client = ros::NodeHandle().serviceClient<moveit_msgs::GetPlanningScene>(service_name);
-	moveit_msgs::GetPlanningScene srv;
-	srv.request.components.components =
-			srv.request.components.SCENE_SETTINGS |
-			srv.request.components.ROBOT_STATE |
-			srv.request.components.ROBOT_STATE_ATTACHED_OBJECTS |
-			srv.request.components.WORLD_OBJECT_NAMES |
-			srv.request.components.WORLD_OBJECT_GEOMETRY |
-			srv.request.components.OCTOMAP |
-			srv.request.components.TRANSFORMS |
-			srv.request.components.ALLOWED_COLLISION_MATRIX |
-			srv.request.components.LINK_PADDING_AND_SCALING |
-			srv.request.components.OBJECT_COLORS;
+  // use global namespace for service
+  ros::ServiceClient client = ros::NodeHandle().serviceClient<moveit_msgs::GetPlanningScene>(service_name);
+  moveit_msgs::GetPlanningScene srv;
+  srv.request.components.components =
+      srv.request.components.SCENE_SETTINGS |
+      srv.request.components.ROBOT_STATE |
+      srv.request.components.ROBOT_STATE_ATTACHED_OBJECTS |
+      srv.request.components.WORLD_OBJECT_NAMES |
+      srv.request.components.WORLD_OBJECT_GEOMETRY |
+      srv.request.components.OCTOMAP |
+      srv.request.components.TRANSFORMS |
+      srv.request.components.ALLOWED_COLLISION_MATRIX |
+      srv.request.components.LINK_PADDING_AND_SCALING |
+      srv.request.components.OBJECT_COLORS;
 
-	// Make sure client is connected to server
-	if (!client.exists())
-	{
-		ROS_DEBUG_STREAM("Waiting for service `" << service_name << "` to exist.");
-		client.waitForExistence(ros::Duration(5.0));
-	}
+  // Make sure client is connected to server
+  if (!client.exists())
+  {
+    ROS_DEBUG_STREAM("Waiting for service `" << service_name << "` to exist.");
+    client.waitForExistence(ros::Duration(5.0));
+  }
 
-	if (client.call(srv))
-	{
-		newPlanningSceneMessage(srv.response.scene);
-	}
-	else
-	{
-		ROS_WARN("Failed to call service %s, have you launched move_group? at %s:%d",
-				service_name.c_str(),
-				__FILE__,
-				__LINE__);
-		return false;
-	}
-	return true;
+  if (client.call(srv))
+  {
+    newPlanningSceneMessage(srv.response.scene);
+  }
+  else
+  {
+    ROS_WARN("Failed to call service %s, have you launched move_group? at %s:%d",
+      service_name.c_str(),
+      __FILE__,
+      __LINE__);
+    return false;
+  }
+  return true;
 }
 
 void planning_scene_monitor::PlanningSceneMonitor::newPlanningSceneCallback(const moveit_msgs::PlanningSceneConstPtr &scene)
@@ -1226,31 +1314,31 @@ void planning_scene_monitor::PlanningSceneMonitor::attachObjectCallback(const mo
 
 void planning_scene_monitor::PlanningSceneMonitor::excludeRobotLinksFromOctree()
 {
-	if (!octomap_monitor_)
-		return;
+  if (!octomap_monitor_)
+    return;
 
-	boost::recursive_mutex::scoped_lock _(shape_handles_lock_);
+  boost::recursive_mutex::scoped_lock _(shape_handles_lock_);
 
-	includeRobotLinksInOctree();
-	const std::vector<const robot_model::LinkModel*> &links = getRobotModel()->getLinkModelsWithCollisionGeometry();
-	for (std::size_t i = 0 ; i < links.size() ; ++i)
-	{
-		std::vector<shapes::ShapeConstPtr> shapes = links[i]->getShapes(); // copy shared ptrs on purpuse
-		for (std::size_t j = 0 ; j < shapes.size() ; ++j)
-		{
-			// merge mesh vertices up to 0.1 mm apart
-			if (shapes[j]->type == shapes::MESH)
-			{
-				shapes::Mesh *m = static_cast<shapes::Mesh*>(shapes[j]->clone());
-				m->mergeVertices(1e-4);
-				shapes[j].reset(m);
-			}
+  includeRobotLinksInOctree();
+  const std::vector<const robot_model::LinkModel*> &links = getRobotModel()->getLinkModelsWithCollisionGeometry();
+  for (std::size_t i = 0 ; i < links.size() ; ++i)
+  {
+    std::vector<shapes::ShapeConstPtr> shapes = links[i]->getShapes(); // copy shared ptrs on purpuse
+    for (std::size_t j = 0 ; j < shapes.size() ; ++j)
+    {
+      // merge mesh vertices up to 0.1 mm apart
+      if (shapes[j]->type == shapes::MESH)
+      {
+        shapes::Mesh *m = static_cast<shapes::Mesh*>(shapes[j]->clone());
+        m->mergeVertices(1e-4);
+        shapes[j].reset(m);
+      }
 
-			occupancy_map_monitor::ShapeHandle h = octomap_monitor_->excludeShape(shapes[j]);
-			if (h)
-				link_shape_handles_[links[i]].push_back(std::make_pair(h, j));
-		}
-	}
+      occupancy_map_monitor::ShapeHandle h = octomap_monitor_->excludeShape(shapes[j]);
+      if (h)
+        link_shape_handles_[links[i]].push_back(std::make_pair(h, j));
+    }
+  }
 }
 
 void planning_scene_monitor::PlanningSceneMonitor::includeRobotLinksInOctree()
@@ -1709,50 +1797,50 @@ void planning_scene_monitor::PlanningSceneMonitor::octomapUpdateCallback()
 
 void planning_scene_monitor::PlanningSceneMonitor::setStateUpdateFrequency(double hz)
 {
-	bool update = false;
-	if (hz > std::numeric_limits<double>::epsilon())
-	{
-		boost::mutex::scoped_lock lock(state_pending_mutex_);
-		dt_state_update_.fromSec(1.0 / hz);
-		state_update_timer_.setPeriod(dt_state_update_);
-		state_update_timer_.start();
-	}
-	else
-	{
-		// stop must be called with state_pending_mutex_ unlocked to avoid deadlock
-		state_update_timer_.stop();
-		boost::mutex::scoped_lock lock(state_pending_mutex_);
-		dt_state_update_ = ros::WallDuration(0,0);
-		if (state_update_pending_)
-			update = true;
-	}
-	ROS_INFO("Updating internal planning scene state at most every %lf seconds", dt_state_update_.toSec());
+  bool update = false;
+  if (hz > std::numeric_limits<double>::epsilon())
+  {
+    boost::mutex::scoped_lock lock(state_pending_mutex_);
+    dt_state_update_.fromSec(1.0 / hz);
+    state_update_timer_.setPeriod(dt_state_update_);
+    state_update_timer_.start();
+  }
+  else
+  {
+    // stop must be called with state_pending_mutex_ unlocked to avoid deadlock
+    state_update_timer_.stop();
+    boost::mutex::scoped_lock lock(state_pending_mutex_);
+    dt_state_update_ = ros::WallDuration(0,0);
+    if (state_update_pending_)
+      update = true;
+  }
+  ROS_INFO("Updating internal planning scene state at most every %lf seconds", dt_state_update_.toSec());
 
-	if (update)
-		updateSceneWithCurrentState();
+  if (update)
+    updateSceneWithCurrentState();
 }
 
 void planning_scene_monitor::PlanningSceneMonitor::updateSceneWithCurrentState()
 {
-	if (current_state_monitor_)
-	{
-		std::vector<std::string> missing;
-		if (!current_state_monitor_->haveCompleteState(missing) && (ros::Time::now() - current_state_monitor_->getMonitorStartTime()).toSec() > 1.0)
-		{
-			std::string missing_str = boost::algorithm::join(missing, ", ");
-			ROS_WARN_THROTTLE(1, "The complete state of the robot is not yet known.  Missing %s", missing_str.c_str());
-		}
+  if (current_state_monitor_)
+  {
+    std::vector<std::string> missing;
+    if (!current_state_monitor_->haveCompleteState(missing) && (ros::Time::now() - current_state_monitor_->getMonitorStartTime()).toSec() > 1.0)
+    {
+      std::string missing_str = boost::algorithm::join(missing, ", ");
+      ROS_WARN_THROTTLE(1, "The complete state of the robot is not yet known.  Missing %s", missing_str.c_str());
+    }
 
-		{
-			boost::unique_lock<boost::shared_mutex> ulock(scene_update_mutex_);
-			current_state_monitor_->setToCurrentState(scene_->getCurrentStateNonConst());
-			last_update_time_ = ros::Time::now();
-			scene_->getCurrentStateNonConst().update(); // compute all transforms
-		}
-		triggerSceneUpdateEvent(UPDATE_STATE);
-	}
-	else
-		ROS_ERROR_THROTTLE(1, "State monitor is not active. Unable to set the planning scene state");
+    {
+      boost::unique_lock<boost::shared_mutex> ulock(scene_update_mutex_);
+      current_state_monitor_->setToCurrentState(scene_->getCurrentStateNonConst());
+      last_update_time_ = ros::Time::now();
+      scene_->getCurrentStateNonConst().update(); // compute all transforms
+    }
+    triggerSceneUpdateEvent(UPDATE_STATE);
+  }
+  else
+    ROS_ERROR_THROTTLE(1, "State monitor is not active. Unable to set the planning scene state");
 }
 
 void planning_scene_monitor::PlanningSceneMonitor::addUpdateCallback(const boost::function<void(SceneUpdateType)> &fn)
@@ -1804,9 +1892,8 @@ void planning_scene_monitor::PlanningSceneMonitor::getUpdatedFrameTransforms(std
 		}
 		catch (tf::TransformException& ex)
 		{
-			//STa comment warning
-//			ROS_WARN_STREAM("Unable to transform object from frame '" << all_frame_names[i] << "' to planning frame '" <<
-//					target << "' (" << ex.what() << ")");
+			ROS_WARN_STREAM("Unable to transform object from frame '" << all_frame_names[i] << "' to planning frame '" <<
+					target << "' (" << ex.what() << ")");
 			continue;
 		}
 
